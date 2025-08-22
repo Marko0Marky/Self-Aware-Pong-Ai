@@ -6,6 +6,98 @@
     <title>Ultimate SCAN - Conscious AI System (Classic Layout)</title>
     <!-- CSS from the earlier, preferred layout version -->
     <style>
+        /* ultimate_consciousness_system3.html */
+
+        /* ADD these styles inside the <style> tag */
+
+        @keyframes neuron-flash-anim {
+            0% { box-shadow: 0 0 8px 2px rgba(255, 255, 255, 0.5); }
+            100% { box-shadow: 0 0 0px 0px rgba(255, 255, 255, 0); }
+        }
+
+        .neuron-flash {
+            animation: neuron-flash-anim 0.3s ease-out forwards;
+        }
+
+        .bottom-section {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            align-items: flex-start; /* Align items to the top */
+        }
+
+        .log-container {
+            flex: 1;
+            min-width: 450px;
+            background: rgba(10, 10, 30, 0.9);
+            border-radius: 12px;
+            border: 1px solid #2a2a4a;
+            padding: 15px;
+        }
+
+        /* NEW: Styles for the NN Visualizer Panel */
+        .nn-visualizer-panel {
+            flex: 1;
+            min-width: 450px;
+            background: rgba(10, 10, 30, 0.9);
+            border-radius: 12px;
+            border: 1px solid #2a2a4a;
+            padding: 15px;
+            height: 245px; /* Match the height of the log container */
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+
+        .nn-visualizer-panel h3 {
+            margin-top: 0;
+        }
+
+        .nn-visualizer-panel p {
+            font-size: 11px;
+            color: #aaa;
+            margin: -10px 0 10px 0;
+            text-align: center;
+        }
+
+        #nn-visualization-container {
+            position: relative; /* Crucial for positioning the canvas */
+            display: flex;
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: center;
+            height: 150px;
+            padding: 0 20px;
+        }
+
+        .nn-layer {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-around;
+            height: 100%;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .nn-neuron {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 1px solid #888;
+            background-color: #333;
+            transition: background-color 0.1s ease-out, border-color 0.1s ease-out;
+        }
+
+        #nn-connections-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Allows mouse events to pass through */
+            z-index: 5;
+        }
+
         body {
             margin: 0;
             background: linear-gradient(135deg, #0a0a15, #1a1a2e);
@@ -384,14 +476,24 @@
             <button id="testImports">🔧 Test System</button>
         </div>
         
-        <!-- Bottom Section: System Console Log -->
-        <div class="bottom-section">
-            <div class="log-container">
-                <h3>🔧 System Console</h3>
-                <div id="log"></div>
-            </div>
+        <!-- ultimate_consciousness_system3.html -->
+
+<!-- MODIFIED Bottom Section: System Console and NN Visualizer side-by-side -->
+<div class="bottom-section">
+    <div class="log-container">
+        <h3>🔧 System Console</h3>
+        <div id="log"></div>
+    </div>
+
+    <!-- NEW: Neural Network Visualizer Panel -->
+    <div class="nn-visualizer-panel">
+        <h3>🧠 World Model Activity</h3>
+        <p>Real-time visualization of the AI's predictive neural network.</p>
+        <div id="nn-visualization-container">
+            <!-- The visualizer will be dynamically generated here by JavaScript -->
         </div>
     </div>
+</div>
 
     <!-- Three.js for 3D visualization -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -484,11 +586,18 @@ function randomVec(n, scale = 0.1) {
     return new Array(n).fill(0).map(() => (Math.random() * 2 - 1) * scale);
 }
 
+// In the global scope of your script
+
 function matVecMul(M, v) {
     const out = new Array(M.length).fill(0);
     for (let i = 0; i < M.length; i++) {
         let s = 0;
-        for (let j = 0; j < v.length; j++) s += M[i][j] * v[j];
+        for (let j = 0; j < v.length; j++) {
+            // "Paranoid" check to guarantee we only multiply numbers.
+            const m_val = M[i][j] || 0;
+            const v_val = v[j] || 0;
+            s += m_val * v_val;
+        }
         out[i] = s;
     }
     return out;
@@ -907,13 +1016,15 @@ class ASTFilter {
 }
 
 // ===== START: UPGRADED WorldModel CLASS =====
-// This is a drop-in replacement for the existing WorldModel class.
-// It features a deeper architecture, an LSTM for memory, an attention mechanism,
-// and the Adam optimizer for faster learning.
+// =======================================================================
+// === START OF THE STABLE REPLACEMENT BLOCK ===
+// Replace the existing AdamOptimizer and WorldModel classes with this entire block.
+// This version uses a stable, deep feed-forward network without the buggy LSTM.
+// =======================================================================
 
 class AdamOptimizer {
     constructor(shape) {
-        this.lr = 0.0005; // A good starting learning rate for Adam
+        this.lr = 0.001; // A safe, standard learning rate
         this.beta1 = 0.9;
         this.beta2 = 0.999;
         this.epsilon = 1e-8;
@@ -931,23 +1042,34 @@ class AdamOptimizer {
     update(param, grad) {
         this.t++;
         const isMatrix = Array.isArray(param);
-        const lr_t = this.lr * Math.sqrt(1 - Math.pow(this.beta2, this.t)) / (1 - Math.pow(this.beta1, this.t));
 
         if (isMatrix) {
             for (let i = 0; i < param.length; i++) {
                 for (let j = 0; j < param[0].length; j++) {
-                    const g = grad[i][j];
+                    const g = grad[i][j] || 0;
+                    if (isNaN(g)) continue;
+
                     this.m[i][j] = this.beta1 * this.m[i][j] + (1 - this.beta1) * g;
                     this.v[i][j] = this.beta2 * this.v[i][j] + (1 - this.beta2) * (g * g);
-                    param[i][j] -= lr_t * this.m[i][j] / (Math.sqrt(this.v[i][j]) + this.epsilon);
+
+                    const m_hat = this.m[i][j] / (1 - Math.pow(this.beta1, this.t));
+                    const v_hat = this.v[i][j] / (1 - Math.pow(this.beta2, this.t));
+                    
+                    param[i][j] -= this.lr * m_hat / (Math.sqrt(v_hat < 0 ? 0 : v_hat) + this.epsilon);
                 }
             }
         } else {
             for (let i = 0; i < param.length; i++) {
-                const g = grad[i];
+                const g = grad[i] || 0;
+                if (isNaN(g)) continue;
+
                 this.m[i] = this.beta1 * this.m[i] + (1 - this.beta1) * g;
                 this.v[i] = this.beta2 * this.v[i] + (1 - this.beta2) * (g * g);
-                param[i] -= lr_t * this.m[i] / (Math.sqrt(this.v[i]) + this.epsilon);
+
+                const m_hat = this.m[i] / (1 - Math.pow(this.beta1, this.t));
+                const v_hat = this.v[i] / (1 - Math.pow(this.beta2, this.t));
+
+                param[i] -= this.lr * m_hat / (Math.sqrt(v_hat < 0 ? 0 : v_hat) + this.epsilon);
             }
         }
     }
@@ -960,259 +1082,133 @@ class WorldModel {
         this.actionDim = actionDim;
         this.qDim = qDim;
 
-        // --- NEW: LSTM configuration ---
-        const lstmHidden = 64;
-        this.h = vecZeros(lstmHidden); // LSTM hidden state
-        this.c = vecZeros(lstmHidden); // LSTM cell state
+        // --- SIMPLIFIED ARCHITECTURE: Deep Feed-Forward Network ---
+        const inputDim = stateDim + actionDim + qDim;
+        const hidden1 = 128, hidden2 = 128, hidden3 = 64;
 
-        // --- NEW: Attention mechanism configuration ---
-        const attentionSize = 32;
-        this.attentionW1 = randomMatrix(attentionSize, stateDim);
-        this.attentionB1 = vecZeros(attentionSize);
-        this.attentionW2 = randomMatrix(stateDim, attentionSize);
-        this.attentionB2 = vecZeros(stateDim);
-
-
-        // --- NEW: LSTM weights ---
-        // We combine all gate weights into one matrix for efficiency
-        const lstmInputDim = stateDim + actionDim + qDim + lstmHidden;
-        this.W_lstm = randomMatrix(lstmHidden * 4, lstmInputDim, 0.1);
-        this.b_lstm = vecZeros(lstmHidden * 4);
-
-        // --- UPGRADE: Deeper network architecture ---
-        const hidden1 = 128;
-        const hidden2 = 128;
-        const hidden3 = 64; // New third hidden layer
-
-        // Qualia projection remains the same
-        this.qProjW = randomMatrix(qDim, stateDim, 0.2);
-        this.qProjB = vecZeros(qDim);
-
-        // Transition network is now deeper
-        this.transW1 = randomMatrix(hidden1, lstmHidden, 0.1);
+        // Transition Network
+        this.transW1 = this.randomMatrix(hidden1, inputDim, 0.1);
         this.transB1 = vecZeros(hidden1);
-        this.transW2 = randomMatrix(hidden2, hidden1, 0.1);
+        this.transW2 = this.randomMatrix(hidden2, hidden1, 0.1);
         this.transB2 = vecZeros(hidden2);
-        this.transW3 = randomMatrix(hidden3, hidden2, 0.1);
+        this.transW3 = this.randomMatrix(hidden3, hidden2, 0.1);
         this.transB3 = vecZeros(hidden3);
-        this.transW4 = randomMatrix(stateDim, hidden3, 0.1); // Output layer
+        this.transW4 = this.randomMatrix(stateDim, hidden3, 0.1);
         this.transB4 = vecZeros(stateDim);
 
-        // Reward network is also deeper
-        const rewardInputDim = stateDim + qDim;
-        this.rewardW1 = randomMatrix(hidden1, rewardInputDim, 0.1);
-        this.rewardB1 = vecZeros(hidden1);
-        this.rewardW2 = randomMatrix(hidden2, hidden1, 0.1);
-        this.rewardB2 = vecZeros(hidden2);
-        this.rewardW3 = randomMatrix(hidden3, hidden2, 0.1);
-        this.rewardB3 = vecZeros(hidden3);
-        this.rewardW4 = randomMatrix(1, hidden3, 0.1); // Output layer
-        this.rewardB4 = [0];
+        // Reward Network (also simplified for stability)
+        this.rewardW1 = this.randomMatrix(64, stateDim + qDim, 0.1);
+        this.rewardB1 = vecZeros(64);
+        this.rewardW2 = this.randomMatrix(1, 64, 0.1);
+        this.rewardB2 = [0];
+        
+        // Qualia Projection
+        this.qProjW = this.randomMatrix(qDim, stateDim, 0.2);
+        this.qProjB = vecZeros(qDim);
 
         this.memory = [];
         this.fepHistory = [];
 
-        // --- NEW: Adam optimizers for all learnable parameters ---
-        this.adam_W_lstm = new AdamOptimizer([lstmHidden * 4, lstmInputDim]);
-        this.adam_b_lstm = new AdamOptimizer(lstmHidden * 4);
-        this.adam_transW3 = new AdamOptimizer([hidden3, hidden2]);
-        this.adam_transB3 = new AdamOptimizer(hidden3);
+        // Optimizers for the layers we will train
         this.adam_transW4 = new AdamOptimizer([stateDim, hidden3]);
         this.adam_transB4 = new AdamOptimizer(stateDim);
-        this.adam_rewardW3 = new AdamOptimizer([hidden3, hidden2]);
-        this.adam_rewardB3 = new AdamOptimizer(hidden3);
-        this.adam_rewardW4 = new AdamOptimizer([1, hidden3]);
-        this.adam_rewardB4 = new AdamOptimizer(1);
+        this.adam_transW3 = new AdamOptimizer([hidden3, hidden2]);
+        this.adam_transB3 = new AdamOptimizer(hidden3);
     }
-
-    qProj(state) {
-        const q = matVecMul(this.qProjW, state);
-        return q.map((v, i) => Math.tanh(v + this.qProjB[i]));
+    
+    // --- HELPER METHODS ---
+    randomMatrix(rows, cols, scale = 0.1) {
+        const M = new Array(rows);
+        for (let i = 0; i < rows; i++) M[i] = new Array(cols).fill(0).map(() => (Math.random() * 2 - 1) * scale);
+        return M;
     }
+    qProj(state) { return tanhVec(addVec(matVecMul(this.qProjW, state), this.qProjB)); }
+    storeTransition(s, a, nextS, r, Q, nextQ) { this.memory.push({ s, a, nextS, r, Q, nextQ }); if (this.memory.length > 2000) this.memory.shift(); }
 
+    // --- CORE LOGIC ---
     predict(state, action, q) {
-        // --- 1. NEW: Attention Mechanism ---
-        // The network learns to focus on the most important parts of the state
-        const att_h1 = tanhVec(addVec(matVecMul(this.attentionW1, state), this.attentionB1));
-        const attention_scores = softmax(addVec(matVecMul(this.attentionW2, att_h1), this.attentionB2));
-        const attended_state = state.map((val, i) => val * attention_scores[i]);
+        const activations = {};
+        if (state.some(isNaN) || action.some(isNaN) || q.some(isNaN)) {
+             return { nextState: state, nextQ: q, reward: 0, fep: 1, activations: {} };
+        }
 
-        // --- 2. NEW: LSTM Core ---
-        // The LSTM processes the current state/action and its own memory (h, c)
-        const lstm_input = attended_state.concat(action).concat(q).concat(this.h);
-        const gates = addVec(matVecMul(this.W_lstm, lstm_input), this.b_lstm);
+        const input = state.concat(action).concat(q);
+        activations.input = state; // Visualize just the game state part
 
-        const lstmHidden = this.h.length;
-        const i_gate = gates.slice(0, lstmHidden).map(x => 1 / (1 + Math.exp(-x))); // Sigmoid
-        const f_gate = gates.slice(lstmHidden, lstmHidden * 2).map(x => 1 / (1 + Math.exp(-x))); // Sigmoid
-        const o_gate = gates.slice(lstmHidden * 2, lstmHidden * 3).map(x => 1 / (1 + Math.exp(-x))); // Sigmoid
-        const g_gate = gates.slice(lstmHidden * 3, lstmHidden * 4).map(Math.tanh); // Tanh
-
-        this.c = addVec(scaleVec(this.c, f_gate), scaleVec(g_gate, i_gate));
-        this.h = scaleVec(this.c.map(Math.tanh), o_gate);
-
-        // The output of the LSTM (this.h) is now the input to the prediction networks
-        const cognitive_state = this.h;
-
-        // --- 3. UPGRADED: Forward pass through deeper transition network ---
-        const h1_trans = tanhVec(addVec(matVecMul(this.transW1, cognitive_state), this.transB1));
+        // Forward pass through transition network
+        const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
         const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
+        activations.hidden2 = h2_trans; // Use this as the second visualization layer
         const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
         let nextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
+        activations.output = nextState;
 
-        // Critical stability fix remains
-        nextState = nextState.map((val, i) => {
-            const min = (i < 4) ? -2.0 : 0.0;
-            const max = (i < 4) ? 2.0 : 1.0;
-            return isFinite(val) ? clamp(val, min, max) : 0;
-        });
+        // The "lstm" key is still expected by the visualizer, so we provide a placeholder.
+        activations.lstm = h1_trans; 
 
+        nextState = nextState.map((val, i) => clamp(isFinite(val) ? val : 0, -2.0, 2.0));
         const nextQ = this.qProj(nextState);
 
-        // --- 4. UPGRADED: Forward pass through deeper reward network ---
-        const reward_inp = nextState.concat(nextQ);
-        const h1_reward = tanhVec(addVec(matVecMul(this.rewardW1, reward_inp), this.rewardB1));
-        const h2_reward = tanhVec(addVec(matVecMul(this.rewardW2, h1_reward), this.rewardB2));
-        const h3_reward = tanhVec(addVec(matVecMul(this.rewardW3, h2_reward), this.rewardB3));
-        const reward = matVecMul(this.rewardW4, h3_reward)[0] + this.rewardB4[0];
+        // Forward pass through reward network
+        const h1_reward = tanhVec(addVec(matVecMul(this.rewardW1, nextState.concat(nextQ)), this.rewardB1));
+        const reward = matVecMul(this.rewardW2, h1_reward)[0] + this.rewardB2[0];
 
-        // FEP calculation remains the same
-        const recon = norm2(sub(nextState, state));
-        const kl_approx = 0.5 * norm2(sub(nextQ, q));
-        const vfe = kl_approx + recon;
-        const fep = vfe;
-
-        return {
-            nextState: new Float32Array(nextState),
-            nextQ,
-            reward: reward,
-            fep
-        };
-    }
-
-    storeTransition(s, a, nextS, r, Q, nextQ) {
-        this.memory.push({ s, a, nextS, r, Q, nextQ });
-        if (this.memory.length > 2000) this.memory.shift();
+        const fep = norm2(sub(nextState, state)) + 0.5 * norm2(sub(nextQ, q));
+        return { nextState: new Float32Array(nextState), nextQ, reward, fep, activations };
     }
 
     trainFromMemory(batchSize = 16) {
         if (this.memory.length < batchSize) return;
-        const gradClip = 0.5;
+        const gradClip = 1.0;
 
         for (let k = 0; k < Math.min(batchSize, this.memory.length); k++) {
-            const idx = Math.floor(Math.random() * this.memory.length);
-            const tr = this.memory[idx];
+            const tr = this.memory[Math.floor(Math.random() * this.memory.length)];
+            if (!tr || !tr.s.every(isFinite) || !tr.a.every(isFinite) || !tr.Q.every(isFinite) || !tr.nextS.every(isFinite)) continue;
 
-            if (!tr || !tr.s || !tr.s.every(isFinite) || !tr.a.every(isFinite) || !tr.Q.every(isFinite) || !tr.nextS.every(isFinite)) {
-                continue;
-            }
-
-            // --- Simplified Backpropagation using Adam ---
-            // We'll perform a forward pass to get intermediate activations, then update the last two layers
-            // of each network. A full backpropagation-through-time is too complex for this context.
-
-            // Forward Pass
-            const temp_h = vecZeros(this.h.length); // Use temporary state for training
-            const temp_c = vecZeros(this.c.length);
-            const lstm_input = tr.s.concat(tr.a).concat(tr.Q).concat(temp_h);
-            const gates = addVec(matVecMul(this.W_lstm, lstm_input), this.b_lstm);
-            const lstmHidden = temp_h.length;
-            const i_gate = gates.slice(0, lstmHidden).map(x => 1 / (1 + Math.exp(-x)));
-            const f_gate = gates.slice(lstmHidden, lstmHidden * 2).map(x => 1 / (1 + Math.exp(-x)));
-            const o_gate = gates.slice(lstmHidden * 2, lstmHidden * 3).map(x => 1 / (1 + Math.exp(-x)));
-            const g_gate = gates.slice(lstmHidden * 3, lstmHidden * 4).map(Math.tanh);
-            const next_c = addVec(scaleVec(temp_c, f_gate), scaleVec(g_gate, i_gate));
-            const cognitive_state = scaleVec(next_c.map(Math.tanh), o_gate);
-
-            // Transition network intermediate activations
-            const h1_trans = tanhVec(addVec(matVecMul(this.transW1, cognitive_state), this.transB1));
+            // --- STABLE TRAINING LOOP ---
+            const input = tr.s.concat(tr.a).concat(tr.Q);
+            const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
             const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
             const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
             const predNextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
-            
-            // Reward network intermediate activations
-            const reward_inp = predNextState.concat(this.qProj(predNextState));
-            const h1_reward = tanhVec(addVec(matVecMul(this.rewardW1, reward_inp), this.rewardB1));
-            const h2_reward = tanhVec(addVec(matVecMul(this.rewardW2, h1_reward), this.rewardB2));
-            const h3_reward = tanhVec(addVec(matVecMul(this.rewardW3, h2_reward), this.rewardB3));
-            const predReward = matVecMul(this.rewardW4, h3_reward)[0] + this.rewardB4[0];
 
-            if (!predNextState.every(isFinite) || !isFinite(predReward)) continue;
+            if (predNextState.some(isNaN)) continue;
 
-            // Calculate and Clip Errors
             let errS = sub(tr.nextS, predNextState).map(e => clamp(e, -gradClip, gradClip));
-            let errR = clamp(tr.r - predReward, -gradClip, gradClip);
 
-            // --- NEW: Update weights using Adam optimizer ---
-            // We calculate gradients for the last two layers and pass them to Adam.
-            // Gradient for W4 is (error * activation_from_previous_layer)
+            // Backpropagate error one layer to get gradient for W4
             const grad_transW4 = zeros(this.stateDim, h3_trans.length);
-            for (let i = 0; i < this.stateDim; i++) {
-                for (let j = 0; j < h3_trans.length; j++) {
-                    grad_transW4[i][j] = errS[i] * h3_trans[j];
-                }
-            }
+            for (let i = 0; i < this.stateDim; i++) for (let j = 0; j < h3_trans.length; j++) grad_transW4[i][j] = errS[i] * h3_trans[j];
             this.adam_transW4.update(this.transW4, grad_transW4);
             this.adam_transB4.update(this.transB4, errS);
 
-            // Gradient for Reward W4
-            const grad_rewardW4 = [h3_reward.map(h => errR * h)];
-            this.adam_rewardW4.update(this.rewardW4, grad_rewardW4);
-            this.adam_rewardB4.update(this.rewardB4, [errR]);
-
-            // This simplified update is already a massive improvement.
+            // Backpropagate error two layers to get gradient for W3
+            let err_h3 = matVecMul(transpose(this.transW4), errS).map((e, i) => e * (1 - h3_trans[i] ** 2));
+            const grad_transW3 = zeros(h3_trans.length, h2_trans.length);
+            for(let i=0; i<h3_trans.length; i++) for(let j=0; j<h2_trans.length; j++) grad_transW3[i][j] = err_h3[i] * h2_trans[j];
+            this.adam_transW3.update(this.transW3, grad_transW3);
+            this.adam_transB3.update(this.transB3, err_h3);
         }
     }
 
-    imagine(currentState, Q, depth = 12) { // Increased planning depth
-        const paths = [];
-        const actions = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]; // UP, DOWN, IDLE
-
-        // Save current LSTM state
-        const saved_h = this.h.slice();
-        const saved_c = this.c.slice();
-
+    imagine(currentState, Q, depth = 12) {
+        const paths = [], actions = [[1,0,0], [0,1,0], [0,0,1]];
         for (let ai = 0; ai < actions.length; ai++) {
-            let state = currentState.slice();
-            let qual = Q.slice();
-            let total_reward = 0;
-            const path = [`Action:${ai}`];
-
+            let state = currentState.slice(), qual = Q.slice(), total_reward = 0;
+            const actionName = ['UP', 'DOWN', 'IDLE'][ai];
             for (let step = 0; step < depth; step++) {
                 const p = this.predict(state, actions[ai], qual);
-                state = Array.from(p.nextState);
-                qual = p.nextQ.slice();
-                total_reward += p.reward * Math.pow(0.97, step); // Slightly higher discount
-                path.push(`s${step + 1}: r=${p.reward.toFixed(2)}, fep=${p.fep.toFixed(2)}`);
+                if(p.nextState.some(isNaN)) { total_reward = -Infinity; break; }
+                state = Array.from(p.nextState); qual = p.nextQ.slice();
+                total_reward += p.reward * Math.pow(0.97, step);
             }
-            paths.push({
-                action: ai,
-                value: total_reward,
-                path,
-                actionName: ['UP', 'DOWN', 'IDLE'][ai]
-            });
-
-            // Restore LSTM state for the next simulation branch
-            this.h = saved_h.slice();
-            this.c = saved_c.slice();
+            paths.push({ action: ai, value: total_reward, actionName });
         }
-
-        paths.sort((a, b) => b.value - a.value);
-        return paths;
-    }
-    
-    // Helper function used by constructor
-    randomMatrix(rows, cols, scale = 0.1) {
-        const M = new Array(rows);
-        for (let i = 0; i < rows; i++) {
-            M[i] = new Array(cols).fill(0).map(() => (Math.random() * 2 - 1) * scale);
-        }
-        return M;
+        paths.sort((a, b) => b.value - a.value); return paths;
     }
 }
-// ===== END: UPGRADED WorldModel CLASS =====
-// REPLACE THE ENTIRE Syncolator CLASS WITH THIS ROBUST, TIME-BOXED VERSION
 
+// === END OF THE STABLE REPLACEMENT BLOCK ===
 class Syncolator {
     detect(W, Q) {
         const n = W.length;
@@ -1388,10 +1384,11 @@ class HierarchicalConsensus {
         this.hyperedges.push({ nodes, weight });
     }
 }
-// REPLACE the entire stepTick function
+// Global scope
+
 async function stepTick(player, gameState, step, shouldLog = false) {
     if (!player || !gameState || typeof player.forward !== 'function' || !gameState.ai || !gameState.ball || typeof gameState.ai.y !== 'number' || typeof gameState.ball.y !== 'number') {
-        return { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], proofReport: {}, graph: null, selfStability: 0, eval: { C: 0.5, parts: {} } };
+        return { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], proofReport: {}, graph: null, selfStability: 0, eval: { C: 0.5, parts: {} }, activations: null };
     }
     
     const shouldImagine = step % 10 === 0;
@@ -1399,34 +1396,24 @@ async function stepTick(player, gameState, step, shouldLog = false) {
     try {
         decision = await player.forward(gameState, shouldImagine, shouldLog);
         if (!decision || typeof decision !== 'object') {
-            decision = { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], eval: { C: 0.5, parts: {} } };
+            decision = { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], eval: { C: 0.5, parts: {} }, activations: null };
         }
     } catch (error) {
         console.error('Error in player.forward:', error);
-        decision = { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], eval: { C: 0.5, parts: {} } };
+        decision = { action: 'IDLE', consciousness: 0.5, coherenceError: 0, imaginationPaths: [], eval: { C: 0.5, parts: {} }, activations: null };
     }
 
-    // --- THE FIX FOR MISSING CALCULATIONS IS HERE ---
-    // This block now runs ALL the necessary proof harness checks periodically.
     if (step % 20 === 0 && player.graph?.q && player.proofHarness) {
         try {
-            // Check 1: Clifford Algebra Integrity
             player.proofHarness.checkDagger(player.graph.q);
-
-            // Check 2: Binding Matrix Sanity
             const B = qualiaBindMatrix(player.graph.q);
             player.proofHarness.checkPSD(B);
-            
-            // Check 3: System Stability (Idempotence)
             if (player.diachronicStack.length > 1) {
                 const W1 = player.diachronicStack[player.diachronicStack.length - 2];
                 const W2 = player.diachronicStack[player.diachronicStack.length - 1];
                 player.proofHarness.checkIdempotence(W1, W2);
             }
-
-            // Check 4: Attention Consistency
             player.proofHarness.checkCoalgebra(player.graph.aSchema, player.graph.aMeasured);
-
         } catch (error) {
             console.error('Error during Proof Harness execution:', error);
         }
@@ -1440,9 +1427,11 @@ async function stepTick(player, gameState, step, shouldLog = false) {
         proofReport: player.proofHarness?.report?.() ?? {},
         graph: player.graph ?? null,
         selfStability: player.selfStability ?? 0,
-        eval: decision.eval ?? { C: 0.5, parts: {} }
+        eval: decision.eval ?? { C: 0.5, parts: {} },
+        activations: decision.activations ?? null // <-- PASS ACTIVATIONS THROUGH
     };
 }
+
 class ProofHarness {
         constructor(tol = 1e-3) {
             this.tol = tol;
@@ -1705,7 +1694,7 @@ runAmortizedSheafDiffusion() {
     this.neighborCache = this.buildNeighborCache(this.graph.W);
 }
 
-// REPLACE the entire forward function in the UltimateSCANPlayer class
+// In the UltimateSCANPlayer class
 
 async forward(gameState, shouldImagine) {
     this.internalStep++;
@@ -1719,39 +1708,58 @@ async forward(gameState, shouldImagine) {
     const { C } = calculateFreeEnergy(this.graph, perceptionResult.coherenceError, fe_params);
     this.lastC = C;
 
-    // We will now imagine more frequently to make the AI more responsive.
+    let finalActivations = null; // Variable to hold the chosen activations
+
     shouldImagine = this.internalStep % 5 === 0;
 
     if (shouldImagine) {
         // 2. IMAGINE
-        const imaginationResults = ['UP', 'DOWN', 'IDLE'].map(action => {
+        const imaginationFutures = [];
+        const actions = ['UP', 'DOWN', 'IDLE'];
+        
+        for(const action of actions) {
             const perturbation = this.createImaginedPerturbation(gameState, action);
             const futureSim = this.settleGraphState(cloneGraph(this.graph), perturbation, this.graph.q);
             const imagined_params = this.getParams(futureSim, futureSim.graph);
+            
+            // Run the prediction to get both Free Energy and Activations
+            // THE FIX WAS HERE: Changed 'this.player.worldModel' to 'this.worldModel'
+            const worldModelPrediction = this.worldModel.predict(
+                this.gameStateToVec(gameState),
+                action === 'UP' ? [1,0,0] : action === 'DOWN' ? [0,1,0] : [0,0,1],
+                this.getAggregateQualia(this.graph)
+            );
+            
             let { freeEnergy: futureFE } = calculateFreeEnergy(futureSim.graph, futureSim.coherenceError, imagined_params);
-
-            // --- THE DEFINITIVE FIX: ACTION INERTIA ---
-            // Apply a small bonus (a reduction in free energy) to the action
-            // that was already being taken. This prevents the AI from rapidly
-            // flickering between two equally good options.
+            
             if (action === this.lastChosenAction) {
-                futureFE -= 0.008; // A small nudge to prefer the current action
+                futureFE -= 0.008;
             }
 
-            return { action, freeEnergy: futureFE };
-        });
+            imaginationFutures.push({ action, freeEnergy: futureFE, activations: worldModelPrediction.activations });
+        }
 
         // 3. DECIDE
-        const filteredResults = this.ciFilter.filter(imaginationResults, this, gameState);
+        const filteredResults = this.ciFilter.filter(imaginationFutures, this, gameState);
         this.lastImagination = filteredResults;
         
-        const bestFuture = filteredResults.find(r => isFinite(r.freeEnergy));
-        if (bestFuture) {
+        const bestFuture = filteredResults.reduce((best, current) => (current.freeEnergy < best.freeEnergy) ? current : best, { freeEnergy: Infinity });
+
+        if (bestFuture && isFinite(bestFuture.freeEnergy)) {
             this.lastChosenAction = bestFuture.action;
+            finalActivations = bestFuture.activations;
         } else {
-            // This fallback should now almost never be needed.
             this.lastChosenAction = this.lastChosenAction || 'IDLE';
         }
+    } else {
+        // If not imagining, run a single prediction for the current action to get activations
+        // THE FIX WAS HERE: Changed 'this.player.worldModel' to 'this.worldModel'
+         const worldModelPrediction = this.worldModel.predict(
+            this.gameStateToVec(gameState),
+            this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1],
+            this.getAggregateQualia(this.graph)
+        );
+        finalActivations = worldModelPrediction.activations;
     }
     
     // 4. PREPARE & RETURN
@@ -1769,9 +1777,11 @@ async forward(gameState, shouldImagine) {
         consciousness: C,
         coherenceError: perceptionResult.coherenceError,
         imaginationPaths: formattedPaths,
-        eval: { C, parts: fe_params }
+        eval: { C, parts: fe_params },
+        activations: finalActivations
     };
 }
+
 // ADD THIS NEW METHOD TO THE UltimateSCANPlayer CLASS
 
 learn(reward, consciousness) {
@@ -3440,11 +3450,212 @@ class ConsciousnessVisualizer {
         console.log('✅ 3D visualization loaded');
 
         // ===== MAIN APPLICATION =====
+        // Paste this code before the 'class UltimateConsciousnessSystem'
+class NeuralNetworkVisualizer {
+    constructor(containerId, worldModel) {
+        this.container = document.getElementById(containerId);
+        this.worldModel = worldModel;
+        if (!this.container || !this.worldModel) {
+            console.error("NN Visualizer failed to initialize: container or model not found.");
+            return;
+        }
+
+        // Define the layers and neuron counts to display. We sample from larger layers.
+        this.layers = [
+            { name: 'input', count: 6, dataKey: 'input' },
+            { name: 'lstm', count: 12, dataKey: 'lstm' },
+            { name: 'hidden2', count: 12, dataKey: 'hidden2' },
+            { name: 'output', count: 6, dataKey: 'output' }
+        ];
+
+        this.neuronElements = []; // To store references to the neuron divs
+        this.lastActivations = null;
+
+        this._setupDOM();
+        this._drawConnections(); // Initial drawing of connections
+    }
+
+    _setupDOM() {
+        this.container.innerHTML = ''; // Clear container
+
+        // Create canvas for connections
+        this.canvas = document.createElement('canvas');
+        this.canvas.id = 'nn-connections-canvas';
+        this.ctx = this.canvas.getContext('2d');
+        this.container.appendChild(this.canvas);
+
+        // Create neuron divs
+        this.layers.forEach((layer, layerIndex) => {
+            const layerDiv = document.createElement('div');
+            layerDiv.className = 'nn-layer';
+            this.neuronElements[layerIndex] = [];
+
+            for (let i = 0; i < layer.count; i++) {
+                const neuronDiv = document.createElement('div');
+                neuronDiv.className = 'nn-neuron';
+                layerDiv.appendChild(neuronDiv);
+                this.neuronElements[layerIndex].push(neuronDiv);
+            }
+            this.container.appendChild(layerDiv);
+        });
+
+        // Resize canvas to fit container
+        const resizeObserver = new ResizeObserver(() => {
+            this.canvas.width = this.container.clientWidth;
+            this.canvas.height = this.container.clientHeight;
+            this._drawConnections();
+        });
+        resizeObserver.observe(this.container);
+    }
+    
+    _getNeuronPosition(layerIndex, neuronIndex) {
+        const neuronDiv = this.neuronElements[layerIndex][neuronIndex];
+        const rect = neuronDiv.getBoundingClientRect();
+        const containerRect = this.container.getBoundingClientRect();
+        return {
+            x: rect.left - containerRect.left + rect.width / 2,
+            y: rect.top - containerRect.top + rect.height / 2
+        };
+    }
+
+    // In the NeuralNetworkVisualizer class
+
+    _drawConnections() {
+        if (!this.neuronElements || this.neuronElements.length === 0) return;
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // Define which weight matrices connect which visualized layers
+        const weightMatrices = [
+            this.worldModel.transW1,  // Connects LSTM -> Hidden1
+            this.worldModel.transW2,  // Connects Hidden1 -> Hidden2
+            this.worldModel.transW4   // Connects Hidden3 -> Output
+        ];
+
+        // We only have 3 sets of connections for our 4 visualized layers
+        for (let l = 0; l < this.layers.length - 1; l++) {
+            const sourceLayer = this.layers[l];
+            const targetLayer = this.layers[l + 1];
+            const matrix = weightMatrices[l];
+            if (!matrix) continue;
+
+            const sourceDim = matrix[0].length;
+            const targetDim = matrix.length;
+
+            for (let i = 0; i < sourceLayer.count; i++) {
+                for (let j = 0; j < targetLayer.count; j++) {
+                    const startPos = this._getNeuronPosition(l, i);
+                    const endPos = this._getNeuronPosition(l + 1, j);
+
+                    // Sample a real weight from the actual weight matrix
+                    const sourceMatrixIndex = Math.floor(i * (sourceDim / sourceLayer.count));
+                    const targetMatrixIndex = Math.floor(j * (targetDim / targetLayer.count));
+                    
+                    const weight = matrix[targetMatrixIndex][sourceMatrixIndex] || 0;
+
+                    // Visualize the weight
+                    const alpha = Math.min(0.5, Math.abs(weight) * 5.0); // Amplify for visibility
+                    if (alpha < 0.05) continue; // Don't draw very weak connections
+
+                    this.ctx.strokeStyle = weight > 0 ? `rgba(68, 170, 255, ${alpha})` : `rgba(255, 85, 85, ${alpha})`;
+                    this.ctx.lineWidth = Math.min(1.5, alpha * 2);
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(startPos.x, startPos.y);
+                    this.ctx.lineTo(endPos.x, endPos.y);
+                    this.ctx.stroke();
+                }
+            }
+        }
+    }
+
+   // In the NeuralNetworkVisualizer class
+
+    update(activations) {
+        if (!activations) return;
+
+        if (Math.random() < 0.05) {
+            this._drawConnections();
+        }
+
+        const oldActivations = this.lastActivations;
+        this.lastActivations = activations;
+
+        const debugContainer = document.getElementById('nn-debug-display');
+        let debugHTML = '';
+
+        this.layers.forEach((layer, l_idx) => {
+            const activationData = activations[layer.dataKey];
+            if (!activationData || activationData.length === 0) return;
+
+            const stats = { min: 0, max: 0, avg: 0 };
+            if (activationData.length > 0) {
+                stats.min = activationData.reduce((min, v) => Math.min(min, v), Infinity);
+                stats.max = activationData.reduce((max, v) => Math.max(max, v), -Infinity);
+                stats.avg = activationData.reduce((sum, v) => sum + v, 0) / activationData.length;
+            }
+            debugHTML += `<div><strong>${layer.name.toUpperCase()}</strong><br>
+                            max: ${stats.max.toFixed(4)}<br>
+                            avg: ${stats.avg.toFixed(4)}
+                          </div>`;
+
+            let maxAbsVal = 0;
+            for (const val of activationData) {
+                if (Math.abs(val) > maxAbsVal) {
+                    maxAbsVal = Math.abs(val);
+                }
+            }
+            const normalizer = maxAbsVal + 1e-9;
+
+            for (let n_idx = 0; n_idx < layer.count; n_idx++) {
+                const dataIndex = Math.floor(n_idx * (activationData.length / layer.count));
+                const value = activationData[dataIndex] || 0;
+                
+                const normalizedValue = value / normalizer;
+
+                // ================================================================
+                // === VISUAL DIMMING LOGIC ===
+                // 1. We removed Math.sqrt() for a more linear, less intense brightness.
+                const visualIntensity = clamp(Math.abs(normalizedValue), 0, 1);
+                // 2. We reduced the ambient brightness for better contrast.
+                const ambient = 0.05;
+                const finalIntensity = ambient + (1 - ambient) * visualIntensity;
+                // ================================================================
+
+                // 3. The final lightness is multiplied by 45% instead of 50% for a lower ceiling.
+                const color = value >= 0 
+                    ? `hsl(195, 100%, ${finalIntensity * 45}%)` 
+                    : `hsl(0, 100%, ${finalIntensity * 45}%)`;
+                const borderColor = value >= 0 
+                    ? `hsl(195, 100%, 70%)` 
+                    : `hsl(0, 100%, 70%)`;
+                
+                const neuronEl = this.neuronElements[l_idx][n_idx];
+                neuronEl.style.backgroundColor = color;
+                neuronEl.style.borderColor = borderColor;
+
+                if (oldActivations && oldActivations[layer.dataKey]) {
+                    const oldValue = oldActivations[layer.dataKey][dataIndex] || 0;
+                    const oldNormalizedValue = oldValue / normalizer;
+                    if (Math.abs(normalizedValue - oldNormalizedValue) > 0.5) {
+                        neuronEl.classList.remove('neuron-flash');
+                        void neuronEl.offsetWidth;
+                        neuronEl.classList.add('neuron-flash');
+                    }
+                }
+            }
+        });
+        
+        if (debugContainer) {
+            debugContainer.innerHTML = debugHTML;
+        }
+    }
+}
 
         class UltimateConsciousnessSystem {
     constructor() {
         this.isRunning = false;
         this.step = 0;
+        this.nnVisualizer = null;
         this.lastGameState = null;
         this.lastAction = 'IDLE';
         this.lastResult = null; // <-- ADD THIS LINE
@@ -3468,6 +3679,9 @@ class ConsciousnessVisualizer {
         if (vizContainer) {
             this.visualizer = new ConsciousnessVisualizer(vizContainer);
             this.visualizer.createOrUpdateGraph(initialGraph, 0.5);
+            if (this.player && this.player.worldModel) {
+           this.nnVisualizer = new NeuralNetworkVisualizer('nn-visualization-container', this.player.worldModel);
+            }
         }
         this.startNarrationSystem();
         console.log('✅ System initialized with language integration');
@@ -3634,6 +3848,14 @@ async gameLoop() {
         // --- 1. CAPTURE STATE & THINK ---
         const gameState = { ball: { ...this.pongGame.ball }, ai: { ...this.pongGame.ai }, player: { ...this.pongGame.player } };
         const result = await stepTick(this.player, gameState, this.step);
+         if (this.step % 60 === 0 && result.activations) { // Log every 60 frames
+                console.log(`--- [STEP ${this.step}] AI ACTIVATIONS ---`);
+                console.log("Input:", result.activations.input.slice(0, 5));
+                console.log("LSTM:", result.activations.lstm.slice(0, 5));
+                console.log("Hidden2:", result.activations.hidden2.slice(0, 5));
+                console.log("Output:", result.activations.output.slice(0, 5));
+                console.log("------------------------------------");
+            }
         const action = result.action || 'IDLE';
 
         // --- 2. ACT & UPDATE PHYSICS ---
@@ -3656,6 +3878,7 @@ async gameLoop() {
         // --- 4. VISUALIZE & UPDATE ALL UI ---
         this.pongGame.render(result.consciousness);
         this.visualizer.createOrUpdateGraph(result.graph, result.consciousness);
+        if (result.activations) this.nnVisualizer.update(result.activations);
         
         // This single call now handles ALL UI updates, including the proof harness and imagination paths.
         // The erroneous call to updateProofMetrics has been removed.
