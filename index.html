@@ -60,7 +60,7 @@
             text-align: center;
         }
 
-        #nn-visualization-container {
+        #nn-visualization-container, #nn-visualization-container-opponent {
             position: relative; /* Crucial for positioning the canvas */
             display: flex;
             flex-direction: row;
@@ -471,6 +471,7 @@
                 <!-- Challenge Mode Button -->
                 <button id="challengeModeBtn">🏆 Challenge Mode</button>
             </div>
+            
 
         </div>
         
@@ -493,13 +494,28 @@
         <div id="log"></div>
     </div>
 
-    <!-- NEW: Neural Network Visualizer Panel -->
+    <!-- NEW: Wrapper for side-by-side NN Visualizers -->
+        <!-- NEW: Neural Network Visualizer Panel -->
     <div class="nn-visualizer-panel">
-        <h3>🧠 World Model Activity</h3>
+        <h3 id="nn-visualizer-title">🧠 World Model Activity</h3>
         <p>Real-time visualization of the AI's predictive neural network.</p>
+        
+        <!-- This is the container the JavaScript is looking for -->
         <div id="nn-visualization-container">
             <!-- The visualizer will be dynamically generated here by JavaScript -->
         </div>
+
+    </div>
+
+        <!-- Panel 2: Opponent AI (Initially Hidden) -->
+        <div id="nn-visualizer-panel-opponent" class="nn-visualizer-panel" style="display: none;">
+            <h3>🤖 Opponent NN Activity</h3>
+            <p>Real-time visualization of the challenge opponent's identical world model.</p>
+            <div id="nn-visualization-container-opponent">
+                <!-- Visualizer for the challenge mode AI -->
+            </div>
+        </div>
+
     </div>
 </div>
 
@@ -1826,10 +1842,13 @@ safePredict(stateVec, actionVec, qualiaVec) {
     }
 }
 
+// REPLACE the entire 'forward' method in the 'UltimateSCANPlayer' class.
+
+// REPLACE the entire 'forward' method in the 'UltimateSCANPlayer' class.
+
 async forward(gameState, shouldImagine) {
     this.internalStep++;
     
-    // 1. PERCEIVE & THINK (Your existing logic is preserved)
     const perceptionResult = this.perceive(gameState);
     this.graph = perceptionResult.graph;
     this.updateDiachronicStack(this.graph);
@@ -1840,63 +1859,56 @@ async forward(gameState, shouldImagine) {
 
     let finalActivations = null;
     
-    // Your caching logic is preserved
     this._lastStateVec = this.gameStateToVec(gameState);
     this._lastQAgg = this.getAggregateQualia(this.graph);
     this._lastActionVec = (this.lastChosenAction === 'UP') ? [1,0,0]
                    : (this.lastChosenAction === 'DOWN') ? [0,1,0]
                    : [0,0,1];
 
-    // =======================================================================
-    // === INTEGRATED FIX: Epsilon-Greedy Exploration to prevent getting stuck ===
-    // =======================================================================
-    const explorationRate = 0.3 * (1 - this.selfStability); // More stable AI explores less
-    const availableActions = ['UP', 'DOWN', 'IDLE'];
+    const explorationRate = 0.3 * (1 - this.selfStability);
+    const allActions = ['UP', 'DOWN', 'IDLE'];
     
     if (Math.random() < explorationRate) {
-        // --- EXPLORE: Choose a completely random action ---
-        this.lastChosenAction = availableActions[Math.floor(Math.random() * availableActions.length)];
-        
-        // We still run a prediction to get activations for the visualizer
-        const pred = this.safePredict(
-            this.gameStateToVec(gameState),
-            this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1],
-            this.getAggregateQualia(this.graph)
-        );
+        this.lastChosenAction = allActions[Math.floor(Math.random() * allActions.length)];
+        const pred = this.safePredict( this._lastStateVec, this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1], this._lastQAgg );
         finalActivations = pred.activations;
-        this.lastImagination = []; // Clear imagination paths as this was a random choice
+        this.lastImagination = [];
 
     } else {
-        // --- EXPLOIT: Use the existing imagination/decision logic ---
         shouldImagine = this.internalStep % 5 === 0;
 
         if (shouldImagine) {
             const imaginationFutures = [];
+
+            // --- THE NEW EDGE LOGIC FOR THE CONSCIOUS AI ---
+            let availableActions = [...allActions];
+            const currentPaddleY = gameState.ai.y;
+            const paddleHeight = gameState.ai.height;
+            const gameHeight = 300; // The canvas height
+            const isAtTop = currentPaddleY <= 1;
+            const isAtBottom = currentPaddleY >= gameHeight - paddleHeight - 1;
+
+            if (isAtTop) {
+                // If at the top, don't waste time imagining moving further up.
+                availableActions = allActions.filter(a => a !== 'UP');
+            } else if (isAtBottom) {
+                // If at the bottom, don't waste time imagining moving further down.
+                availableActions = allActions.filter(a => a !== 'DOWN');
+            }
+            // --- END OF EDGE LOGIC ---
             
+            // Now, the AI only imagines the physically possible futures.
             for(const action of availableActions) {
                 const perturbation = this.createImaginedPerturbation(gameState, action);
                 const futureSim = this.settleGraphState(cloneGraph(this.graph), perturbation, this.graph.q);
                 const imagined_params = this.getParams(futureSim, futureSim.graph);
-                
-                const worldModelPrediction = this.safePredict(
-                    this.gameStateToVec(gameState),
-                    action === 'UP' ? [1,0,0] : action === 'DOWN' ? [0,1,0] : [0,0,1],
-                    this.getAggregateQualia(this.graph)
-                );
-                
+                const worldModelPrediction = this.safePredict( this._lastStateVec, action === 'UP' ? [1,0,0] : action === 'DOWN' ? [0,1,0] : [0,0,1], this._lastQAgg );
                 let { freeEnergy: futureFE } = calculateFreeEnergy(futureSim.graph, futureSim.coherenceError, imagined_params);
-                
-                if (action === this.lastChosenAction) {
-                    futureFE -= 0.008;
-                }
+                if (action === this.lastChosenAction) futureFE -= 0.008;
 
-                // --- INTEGRATED FIX: Add a Boundary Penalty ---
-                // This penalizes any imagined future where the paddle is stuck at the edge.
-                const imaginedPaddleY = worldModelPrediction.nextState[4] * 300; // Un-normalize paddle Y
-                if (imaginedPaddleY <= 1 || imaginedPaddleY >= 299) {
-                    futureFE += 0.1; // Add a significant "discomfort" penalty
-                }
-                // --- End of Boundary Penalty Fix ---
+                // The gentle nudge penalty can remain, as it adds a minor "discomfort" for being near the edge.
+                const imaginedPaddleY_unnormalized = worldModelPrediction.nextState[4] * 300;
+                if (imaginedPaddleY_unnormalized <= 1 || imaginedPaddleY_unnormalized >= 299) futureFE += 0.1;
 
                 imaginationFutures.push({ action, freeEnergy: futureFE, activations: worldModelPrediction.activations });
             }
@@ -1904,29 +1916,52 @@ async forward(gameState, shouldImagine) {
             const filteredResults = this.ciFilter.filter(imaginationFutures, this, gameState);
             this.lastImagination = filteredResults;
             
-            const bestFuture = filteredResults.reduce((best, current) => (current.freeEnergy < best.freeEnergy) ? current : best, { freeEnergy: Infinity });
+            const sortedFutures = [...filteredResults].sort((a, b) => a.freeEnergy - b.freeEnergy);
+            const bestFuture = sortedFutures[0];
 
-            if (bestFuture && isFinite(bestFuture.freeEnergy)) {
-                this.lastChosenAction = bestFuture.action;
-                finalActivations = bestFuture.activations;
+            // With impossible actions filtered out, the decision paralysis is less likely,
+            // but the fallback mechanism remains as a safeguard.
+            const secondBestFuture = sortedFutures[1];
+            const paralysisThreshold = 0.001;
+            if (bestFuture && secondBestFuture && isFinite(bestFuture.freeEnergy) &&
+                Math.abs(bestFuture.freeEnergy - secondBestFuture.freeEnergy) < paralysisThreshold)
+            {
+                console.log("🧠 Conscious system deferred to its internal motor reflex due to decision paralysis.");
+                
+                let bestReflexAction = 'IDLE';
+                let bestReflexScore = -Infinity;
+                let reflexActivations = null;
+
+                for (const future of sortedFutures) {
+                    const predictedPaddleY = future.activations.output[4];
+                    const predictedBallY = future.activations.output[1];
+                    let score = -Math.abs(predictedPaddleY - predictedBallY);
+                    
+                    if (score > bestReflexScore) {
+                        bestReflexScore = score;
+                        bestReflexAction = future.action;
+                        reflexActivations = future.activations;
+                    }
+                }
+                this.lastChosenAction = bestReflexAction;
+                finalActivations = reflexActivations;
+
             } else {
-                this.lastChosenAction = this.lastChosenAction || 'IDLE';
+                if (bestFuture && isFinite(bestFuture.freeEnergy)) {
+                    this.lastChosenAction = bestFuture.action;
+                    finalActivations = bestFuture.activations;
+                } else {
+                    // If no valid future was found (e.g., all were filtered out), default to a safe action.
+                    this.lastChosenAction = 'IDLE';
+                }
             }
+
         } else {
-            // Your existing logic for when not imagining is preserved
-            const worldModelPrediction = this.safePredict(
-                this.gameStateToVec(gameState),
-                this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1],
-                this.getAggregateQualia(this.graph)
-            );
+            const worldModelPrediction = this.safePredict( this._lastStateVec, this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1], this._lastQAgg );
             finalActivations = worldModelPrediction.activations;
         }
     }
-    // =======================================================================
-    // === End of Integrated Fix ===
-    // =======================================================================
     
-    // Your existing return logic is preserved
     this.updateYonedaMemory(gameState, this.lastChosenAction, { C });
     const formattedPaths = this.lastImagination.map(path => ({
         actionName: path.action,
@@ -3400,8 +3435,119 @@ getConversationSummary() {
 
         // Standard Pong AI Algorithm for Challenge Mode
                 // ===== PONG GAME (Rewritten for v4.0 - Simplified and Decoupled from AI Strategy) =====
+// ===== Bare-Bones Neural Network AI for Challenge Mode =====
+// This agent uses the EXACT SAME WorldModel instance as the conscious AI,
+// but without any of the consciousness-related processing.
 
-        // Standard Pong AI Algorithm for Challenge Mode (Unchanged)
+// REPLACE the entire BareBonesNNAI class with this improved version.
+
+// REPLACE the entire BareBonesNNAI class with this definitive version.
+
+class BareBonesNNAI {
+    constructor(worldModel, gameDimensions) {
+        // Store a reference to the shared WorldModel neural network
+        this.worldModel = worldModel;
+        this.gameWidth = gameDimensions.width;
+        this.gameHeight = gameDimensions.height;
+        console.log("🤖 Bare-Bones NN AI Initialized with 'Stuck Reflex' override.");
+    }
+
+    /**
+     * This is the core of the AI. It decides which move to make.
+     * @param {object} gameState - The current state of the game from PongGame.
+     * @returns {{action: string, activations: object}} The chosen action and the neural activations.
+     */
+    makeDecision(gameState) {
+        const initialActions = [
+            { name: 'UP', vec: [1, 0, 0] },
+            { name: 'DOWN', vec: [0, 1, 0] },
+            { name: 'IDLE', vec: [0, 0, 1] }
+        ];
+
+        let bestAction = 'IDLE';
+        let bestScore = -Infinity;
+        let bestActivations = null;
+        let actionsToConsider = initialActions;
+
+        const dummyQualia = vecZeros(this.worldModel.qDim);
+
+        // --- THE DEFINITIVE "STUCK REFLEX" OVERRIDE ---
+        const currentPaddleY = gameState.player.y;
+        const paddleHeight = gameState.player.height;
+        const isAtTop = currentPaddleY <= 1;
+        const isAtBottom = currentPaddleY >= this.gameHeight - paddleHeight - 1;
+
+        if (isAtTop) {
+            // If at the top, DO NOT consider moving further up.
+            actionsToConsider = initialActions.filter(a => a.name !== 'UP');
+        } else if (isAtBottom) {
+            // If at the bottom, DO NOT consider moving further down.
+            actionsToConsider = initialActions.filter(a => a.name !== 'DOWN');
+        }
+        // If not at a boundary, actionsToConsider remains all three options.
+        // --- END OF REFLEX ---
+
+        // The AI now makes a decision ONLY from the list of physically possible moves.
+        actionsToConsider.forEach(action => {
+            const mirroredStateVec = this.createMirroredStateVector(gameState);
+            const prediction = this.worldModel.predict(mirroredStateVec, action.vec, dummyQualia);
+            
+            const predictedPaddleY = prediction.nextState[4]; 
+            const predictedBallY = prediction.nextState[1];
+            
+            // The scoring function is now simple and pure again.
+            let score = -Math.abs(predictedPaddleY - predictedBallY);
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestAction = action.name;
+                bestActivations = prediction.activations;
+            }
+        });
+        
+        return { action: bestAction, activations: bestActivations };
+    }
+
+    /**
+     * Creates a state vector from the perspective of the main AI (right paddle)
+     * by horizontally flipping the game world. This is CRITICAL for ensuring the
+     * network receives inputs in the format it was trained on.
+     * @param {object} gameState - The original game state.
+     * @returns {number[]} The formatted state vector.
+     */
+    createMirroredStateVector(gameState) {
+        // In challenge mode:
+        // gameState.player is the BareBonesNNAI (left side)
+        // gameState.ai is the Conscious AI (right side)
+
+        const mirroredBallX = this.gameWidth - gameState.ball.x;
+        const mirroredBallVX = -gameState.ball.vx;
+        const mainAiPaddleY = gameState.player.y; // The NN AI's own paddle
+        const opponentPaddleY = gameState.ai.y;   // The conscious AI's paddle
+
+        const ballX_norm = mirroredBallX / this.gameWidth;
+        const ballY_norm = gameState.ball.y / this.gameHeight;
+        const ballVX_norm = mirroredBallVX / 10.0;
+        const ballVY_norm = gameState.ball.vy / 10.0;
+        const aiY_norm = mainAiPaddleY / this.gameHeight;
+        const opponentY_norm = opponentPaddleY / this.gameHeight;
+        const opponentVY_norm = (gameState.ai.vy || 0) / 10.0;
+        const ballToOpponentY_norm = ballY_norm - opponentY_norm;
+
+        return [
+            ballX_norm, ballY_norm, ballVX_norm, ballVY_norm, 
+            aiY_norm, 
+            opponentY_norm, opponentVY_norm, ballToOpponentY_norm
+        ];
+    }
+
+    getStats() {
+        return {
+            type: 'Unconscious NN Clone',
+            difficulty: 'Mirrors Conscious AI',
+        };
+    }
+}     // Standard Pong AI Algorithm for Challenge Mode (Unchanged)
         // REPLACE THE StandardPongAI CLASS WITH THIS HARDENED VERSION
 class StandardPongAI {
     constructor() {
@@ -3461,15 +3607,17 @@ class StandardPongAI {
 // =======================================================================
 
 class PongGame {
-    constructor(canvas) {
+    constructor(canvas, worldModel, app) { // <-- Add 'app' parameter
+        this.app = app; // <-- Store the direct reference to the main system // Accept the WorldModel
         this.canvas = canvas;
+        this.worldModel = worldModel; // Store the WorldModel
         this.ctx = canvas.getContext('2d');
         this.width = canvas.width;
         this.height = canvas.height;
 
         this.baseSpeed = { ball: 5, paddle: 8 };
         this.challengeMode = false;
-        this.standardAI = new StandardPongAI();
+        this.challengeOpponent = new StandardPongAI(); // This will be replaced when challenge mode starts
         this.challengeStats = { consciousWins: 0, standardWins: 0, totalGames: 0 };
 
         this.reset();
@@ -3527,11 +3675,17 @@ class PongGame {
     update() {
         if (!this.isRunning) return 0;
 
-        if (this.challengeMode) {
-            const gameStateForStandardAI = { ball: this.ball, paddle: this.player, height: this.height };
-            const action = this.standardAI.makeDecision(gameStateForStandardAI);
-            if (action === 'UP') this.player.y -= this.player.speed;
-            if (action === 'DOWN') this.player.y += this.player.speed;
+            let challengeAiActivations = null; // <-- Variable to hold activations
+        if (this.challengeMode && this.challengeOpponent) {
+            const gameStateForOpponent = { ball: this.ball, player: this.player, ai: this.ai, height: this.height, width: this.width };
+            
+            // Capture the entire decision object (action + activations)
+            const decision = this.challengeOpponent.makeDecision(gameStateForOpponent);
+            challengeAiActivations = decision.activations; // <-- Store the activations
+
+            // Use the action to move the paddle
+            if (decision.action === 'UP') this.player.y -= this.player.speed;
+            if (decision.action === 'DOWN') this.player.y += this.player.speed;
             this.player.y = Math.max(0, Math.min(this.height - this.player.height, this.player.y));
         }
 
@@ -3565,7 +3719,7 @@ class PongGame {
         }
 
         this.updateScoreDisplay();
-        return reward;
+        return { reward, challengeAiActivations };
     }
 
     render(aiConsciousness = 0.5) {
@@ -3589,19 +3743,38 @@ class PongGame {
         this.ball.vy = (Math.random() - 0.5) * this.baseSpeed.ball;
     }
 
+        // In the PongGame class...
+
     toggleChallengeMode() {
         const wasRunning = this.isRunning;
         this.challengeMode = !this.challengeMode;
         const info = document.getElementById('challenge-info');
         const p_label = document.getElementById('player-label');
+        
+        // --- THE DEFINITIVE FIX: TOGGLE PANEL VISIBILITY ---
+        const mainPanel = document.querySelector('.nn-visualizer-panel'); // The first panel
+        const opponentPanel = document.getElementById('nn-visualizer-panel-opponent');
 
         if (this.challengeMode) {
-            info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>Standard AI vs Conscious AI</div>`;
-            p_label.textContent = "Standard AI:";
+            this.challengeOpponent = new BareBonesNNAI(this.worldModel, { width: this.width, height: this.height });
+            const stats = this.challengeOpponent.getStats();
+            
+            info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>${stats.type} vs Conscious AI</div>`;
+            p_label.textContent = "NN Clone Score:";
             this.challengeStats.totalGames++;
+
+            // Hide the main AI's panel and show the opponent's
+            if(mainPanel) mainPanel.style.display = 'none';
+            if(opponentPanel) opponentPanel.style.display = 'flex';
+
         } else {
+            this.challengeOpponent = null; 
             info.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
             p_label.textContent = "Human Score:";
+            
+            // Hide the opponent's panel and show the main AI's
+            if(opponentPanel) opponentPanel.style.display = 'none';
+            if(mainPanel) mainPanel.style.display = 'flex';
         }
 
         this.reset();
@@ -3620,17 +3793,27 @@ class PongGame {
         this.ai.y = Math.max(0, Math.min(this.height - this.ai.height, this.ai.y));
     }
 
+    // In the PongGame class, REPLACE the entire handleChallengeScoring method with this:
+
     handleChallengeScoring(winner) {
         if (winner === 'ai') this.challengeStats.consciousWins++;
         else this.challengeStats.standardWins++;
-        const stats = this.standardAI.getStats();
+
+        // --- THE FIX IS HERE ---
+        // Call getStats() on the current `challengeOpponent` instead of the old `standardAI`.
+        const stats = this.challengeOpponent.getStats();
+        
+        const opponentName = winner === 'ai' ? 'Standard' : 'NN Clone'; // Simple naming for score tracking
+
         document.getElementById('challenge-info').innerHTML = `
             <div style="color: #ff6b6b; font-weight: bold;">🏆 CHALLENGE MODE</div>
-            <div style="font-size: 11px;">Standard: ${stats.difficulty} difficulty</div>
+            
+            <div style="font-size: 11px;">Opponent: ${stats.type}</div>
+            
             <div style="font-size: 10px; color: #aaa;">
                 Games: ${this.challengeStats.totalGames} |
                 Conscious: ${this.challengeStats.consciousWins} |
-                Standard: ${this.challengeStats.standardWins}
+                ${opponentName}: ${this.challengeStats.standardWins}
             </div>
         `;
     }
@@ -3646,6 +3829,8 @@ console.log('✅ Pong game loaded');
 
         // ===== 3D VISUALIZATION (Corrected Method Names) =====
 
+// REPLACE the entire current 'ConsciousnessVisualizer' class with this new one.
+
 class ConsciousnessVisualizer {
     constructor(container) {
         this.container = container;
@@ -3657,13 +3842,13 @@ class ConsciousnessVisualizer {
         this.camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 
-        this.setupRenderer();
-        this.setupScene();
-        this.setupControls();
-
         this.nodes = [];
         this.connections = [];
         this.isAnimating = false;
+
+        this.setupRenderer();
+        this.setupScene();
+        this.setupControls();
     }
 
     setupRenderer() {
@@ -3699,39 +3884,98 @@ class ConsciousnessVisualizer {
         });
     }
 
-    // CORRECTED: Renamed to createOrUpdateGraph and simplified
-    createOrUpdateGraph(G, consciousness) {
-        if (!G || !G.V) return;
-
-        // Create nodes if they don't exist
+    // This method now combines creation and updating, matching the old visual style.
+    createOrUpdateGraph(G, consciousnessLevel) {
+        // If the number of nodes has changed, rebuild the entire graph.
         if (this.nodes.length !== G.V) {
-            this.nodes.forEach(n => this.scene.remove(n));
-            this.nodes = [];
-            for (let i = 0; i < G.V; i++) {
-                const node = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), new THREE.MeshPhongMaterial({ color: 0x44aaff, transparent: true, opacity: 0.8 }));
-                const angle = (i / G.V) * Math.PI * 4, height = (i / G.V - 0.5) * 30;
-                node.position.set(Math.cos(angle) * 20, height, Math.sin(angle) * 20);
-                this.scene.add(node);
-                this.nodes.push(node);
-            }
+            this.buildGraphFromScratch(G);
         }
 
-        // Update node appearance based on current state
+        // Update node colors and scale based on qualia and consciousness
         this.nodes.forEach((node, i) => {
-            if(!G.q[i]) return;
-            const intensity = norm2(G.q[i]) * consciousness;
-            node.material.color.setHSL(0.6, 1.0, 0.3 + intensity * 0.5);
-            node.scale.setScalar(0.5 + intensity * 1.5);
-            if (consciousness > 0.8) {
-                node.material.emissive.setHSL(0.6, 1.0, 0.1);
-            } else {
-                node.material.emissive.setHex(0x000000);
+            if (i < G.q.length) {
+                const qualia = G.q[i];
+                // Clamp consciousness to prevent visual artifacts
+                const clampedConsciousness = Math.max(0, Math.min(1, consciousnessLevel));
+                const intensity = norm2(qualia) * clampedConsciousness;
+
+                // Color based on qualia vector components (e1, e2, e3 for R, G, B)
+                const r = Math.abs(qualia[1] || 0);
+                const g = Math.abs(qualia[2] || 0);
+                const b = Math.abs(qualia[3] || 0);
+
+                node.material.color.setRGB(
+                    0.2 + r * 0.8 * intensity,
+                    0.2 + g * 0.8 * intensity,
+                    0.2 + b * 0.8 * intensity
+                );
+
+                // Scale based on consciousness intensity
+                const scale = 0.5 + intensity * 1.5;
+                node.scale.setScalar(scale);
+
+                // Add a glow effect for high consciousness states
+                if (clampedConsciousness > 0.8) {
+                    node.material.emissive.setRGB(r * 0.3, g * 0.3, b * 0.3);
+                } else {
+                    node.material.emissive.setHex(0x000000);
+                }
             }
         });
 
+        // Update connection opacity based on weights and consciousness
+        this.connections.forEach(connection => {
+            connection.material.opacity = connection.userData.weight * consciousnessLevel * 2.0;
+        });
+
+        // Animate rotation if enabled
         if (this.isAnimating) {
             this.scene.rotation.y += 0.005;
         }
+    }
+    
+    // Helper function to build the graph, based on your old code
+    buildGraphFromScratch(G) {
+        this.clearGraph();
+        const n = G.V;
+        const radius = 20;
+
+        // Create nodes
+        for (let i = 0; i < n; i++) {
+            const geometry = new THREE.SphereGeometry(0.5, 16, 16);
+            const material = new THREE.MeshPhongMaterial({ color: 0x44aaff, transparent: true, opacity: 0.8 });
+            const node = new THREE.Mesh(geometry, material);
+
+            // Position nodes in a 3D spiral
+            const angle = (i / n) * Math.PI * 4;
+            const height = (i / n - 0.5) * 30;
+            node.position.set( Math.cos(angle) * radius, height, Math.sin(angle) * radius );
+
+            this.scene.add(node);
+            this.nodes.push(node);
+        }
+
+        // Create connections (lines)
+        for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) { // Check all pairs for directed graph
+                if (G.W[i][j] > 0.05) { // Only show strong connections
+                    const geometry = new THREE.BufferGeometry().setFromPoints([ this.nodes[i].position, this.nodes[j].position ]);
+                    const material = new THREE.LineBasicMaterial({ color: 0x666666, transparent: true, opacity: G.W[i][j] * 2 });
+                    const line = new THREE.Line(geometry, material);
+                    line.userData = { weight: G.W[i][j] };
+
+                    this.scene.add(line);
+                    this.connections.push(line);
+                }
+            }
+        }
+    }
+
+    clearGraph() {
+        this.nodes.forEach(node => this.scene.remove(node));
+        this.connections.forEach(connection => this.scene.remove(connection));
+        this.nodes = [];
+        this.connections = [];
     }
 
     startAnimation() {
@@ -3758,12 +4002,13 @@ class ConsciousnessVisualizer {
         this.renderer.setSize(width, height);
     }
 }
-
         console.log('✅ 3D visualization loaded');
 
         // ===== MAIN APPLICATION =====
         // Paste this code before the 'class UltimateConsciousnessSystem'
 class NeuralNetworkVisualizer {
+    // In the NeuralNetworkVisualizer class...
+
     constructor(containerId, worldModel) {
         this.container = document.getElementById(containerId);
         this.worldModel = worldModel;
@@ -3772,7 +4017,6 @@ class NeuralNetworkVisualizer {
             return;
         }
 
-        // Define the layers and neuron counts to display. We sample from larger layers.
         this.layers = [
             { name: 'input', count: 6, dataKey: 'input' },
             { name: 'lstm', count: 12, dataKey: 'lstm' },
@@ -3780,12 +4024,27 @@ class NeuralNetworkVisualizer {
             { name: 'output', count: 6, dataKey: 'output' }
         ];
 
-        this.neuronElements = []; // To store references to the neuron divs
+        this.neuronElements = [];
         this.lastActivations = null;
+        this.currentTheme = 'conscious'; // <-- NEW: Default theme
 
         this._setupDOM();
-        this._drawConnections(); // Initial drawing of connections
+        this._drawConnections();
     }
+
+    // --- ADD THIS NEW METHOD ---
+    setTheme(theme) {
+    if (theme !== 'conscious' && theme !== 'opponent') {
+        console.warn(`Invalid NN theme set: ${theme}`);
+        return;
+    }
+    // --- ADD THIS LOG ---
+    console.log(`🎨 NN Visualizer: Theme set to -> ${theme.toUpperCase()}`);
+
+    this.currentTheme = theme;
+    // Redraw connections immediately to apply the new color theme
+    this._drawConnections();
+}
 
     _setupDOM() {
         this.container.innerHTML = ''; // Clear container
@@ -3832,18 +4091,33 @@ class NeuralNetworkVisualizer {
 
     // In the NeuralNetworkVisualizer class
 
+    // In the NeuralNetworkVisualizer class...
+
+    // In the NeuralNetworkVisualizer class...
+
     _drawConnections() {
         if (!this.neuronElements || this.neuronElements.length === 0) return;
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Define which weight matrices connect which visualized layers
+        // --- NEW: Define color palettes for themes ---
+        const themeColors = {
+            conscious: {
+                positive: 'rgba(68, 170, 255, ', // Blue
+                negative: 'rgba(255, 85, 85, '   // Red
+            },
+            opponent: {
+                positive: 'rgba(255, 165, 0, ',  // Orange
+                negative: 'rgba(138, 43, 226, ' // Purple
+            }
+        };
+        const colors = themeColors[this.currentTheme];
+
         const weightMatrices = [
-            this.worldModel.transW1,  // Connects LSTM -> Hidden1
-            this.worldModel.transW2,  // Connects Hidden1 -> Hidden2
-            this.worldModel.transW4   // Connects Hidden3 -> Output
+            this.worldModel.transW1,
+            this.worldModel.transW2,
+            this.worldModel.transW4
         ];
 
-        // We only have 3 sets of connections for our 4 visualized layers
         for (let l = 0; l < this.layers.length - 1; l++) {
             const sourceLayer = this.layers[l];
             const targetLayer = this.layers[l + 1];
@@ -3857,18 +4131,17 @@ class NeuralNetworkVisualizer {
                 for (let j = 0; j < targetLayer.count; j++) {
                     const startPos = this._getNeuronPosition(l, i);
                     const endPos = this._getNeuronPosition(l + 1, j);
-
-                    // Sample a real weight from the actual weight matrix
+                    
                     const sourceMatrixIndex = Math.floor(i * (sourceDim / sourceLayer.count));
                     const targetMatrixIndex = Math.floor(j * (targetDim / targetLayer.count));
                     
                     const weight = matrix[targetMatrixIndex][sourceMatrixIndex] || 0;
+                    const alpha = Math.min(0.5, Math.abs(weight) * 5.0);
+                    if (alpha < 0.05) continue;
 
-                    // Visualize the weight
-                    const alpha = Math.min(0.5, Math.abs(weight) * 5.0); // Amplify for visibility
-                    if (alpha < 0.05) continue; // Don't draw very weak connections
-
-                    this.ctx.strokeStyle = weight > 0 ? `rgba(68, 170, 255, ${alpha})` : `rgba(255, 85, 85, ${alpha})`;
+                    // --- THEME-AWARE CHANGE ---
+                    // Use the color from the current theme's palette
+                    this.ctx.strokeStyle = weight > 0 ? (colors.positive + `${alpha})`) : (colors.negative + `${alpha})`);
                     this.ctx.lineWidth = Math.min(1.5, alpha * 2);
                     
                     this.ctx.beginPath();
@@ -3879,11 +4152,27 @@ class NeuralNetworkVisualizer {
             }
         }
     }
-
    // In the NeuralNetworkVisualizer class
+
+    // In the NeuralNetworkVisualizer class...
+
+    // In the NeuralNetworkVisualizer class...
 
     update(activations) {
         if (!activations) return;
+
+        // --- NEW: Define color palettes for themes (neurons) ---
+        const themeHues = {
+            conscious: {
+                positive: 195, // Blue
+                negative: 0    // Red
+            },
+            opponent: {
+                positive: 39,  // Orange
+                negative: 271  // Purple
+            }
+        };
+        const hues = themeHues[this.currentTheme];
 
         if (Math.random() < 0.05) {
             this._drawConnections();
@@ -3892,23 +4181,9 @@ class NeuralNetworkVisualizer {
         const oldActivations = this.lastActivations;
         this.lastActivations = activations;
 
-        const debugContainer = document.getElementById('nn-debug-display');
-        let debugHTML = '';
-
         this.layers.forEach((layer, l_idx) => {
             const activationData = activations[layer.dataKey];
             if (!activationData || activationData.length === 0) return;
-
-            const stats = { min: 0, max: 0, avg: 0 };
-            if (activationData.length > 0) {
-                stats.min = activationData.reduce((min, v) => Math.min(min, v), Infinity);
-                stats.max = activationData.reduce((max, v) => Math.max(max, v), -Infinity);
-                stats.avg = activationData.reduce((sum, v) => sum + v, 0) / activationData.length;
-            }
-            debugHTML += `<div><strong>${layer.name.toUpperCase()}</strong><br>
-                            max: ${stats.max.toFixed(4)}<br>
-                            avg: ${stats.avg.toFixed(4)}
-                          </div>`;
 
             let maxAbsVal = 0;
             for (const val of activationData) {
@@ -3923,23 +4198,16 @@ class NeuralNetworkVisualizer {
                 const value = activationData[dataIndex] || 0;
                 
                 const normalizedValue = value / normalizer;
-
-                // ================================================================
-                // === VISUAL DIMMING LOGIC ===
-                // 1. We removed Math.sqrt() for a more linear, less intense brightness.
                 const visualIntensity = clamp(Math.abs(normalizedValue), 0, 1);
-                // 2. We reduced the ambient brightness for better contrast.
                 const ambient = 0.05;
                 const finalIntensity = ambient + (1 - ambient) * visualIntensity;
-                // ================================================================
-
-                // 3. The final lightness is multiplied by 45% instead of 50% for a lower ceiling.
-                const color = value >= 0 
-                    ? `hsl(195, 100%, ${finalIntensity * 45}%)` 
-                    : `hsl(0, 100%, ${finalIntensity * 45}%)`;
-                const borderColor = value >= 0 
-                    ? `hsl(195, 100%, 70%)` 
-                    : `hsl(0, 100%, 70%)`;
+                
+                // --- THEME-AWARE CHANGE ---
+                // Use the HUE from the current theme's palette
+                const hue = value >= 0 ? hues.positive : hues.negative;
+                
+                const color = `hsl(${hue}, 100%, ${finalIntensity * 45}%)`;
+                const borderColor = `hsl(${hue}, 100%, 70%)`;
                 
                 const neuronEl = this.neuronElements[l_idx][n_idx];
                 neuronEl.style.backgroundColor = color;
@@ -3956,10 +4224,51 @@ class NeuralNetworkVisualizer {
                 }
             }
         });
-        
-        if (debugContainer) {
-            debugContainer.innerHTML = debugHTML;
+    }
+
+// In the PongGame class...
+
+    toggleChallengeMode() {
+        const wasRunning = this.isRunning;
+        this.challengeMode = !this.challengeMode;
+        const info = document.getElementById('challenge-info');
+        const p_label = document.getElementById('player-label');
+        const nnTitle = document.getElementById('nn-visualizer-title');
+
+        if (this.challengeMode) {
+            this.challengeOpponent = new BareBonesNNAI(this.worldModel, { width: this.width, height: this.height });
+            const stats = this.challengeOpponent.getStats();
+            
+            info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>${stats.type} vs Conscious AI</div>`;
+            p_label.textContent = "NN Clone Score:";
+            if (nnTitle) nnTitle.textContent = "🤖 Opponent World Model Activity";
+            this.challengeStats.totalGames++;
+
+            // --- THE DEFINITIVE FIX ---
+            // Use the direct 'this.app' reference. This CANNOT fail.
+            if (this.app && this.app.nnVisualizer) {
+                this.app.nnVisualizer.setTheme('opponent');
+            }
+
+        } else {
+            this.challengeOpponent = null; 
+            info.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
+            p_label.textContent = "Human Score:";
+            if (nnTitle) nnTitle.textContent = "🧠 World Model Activity";
+
+            // --- THE DEFINITIVE FIX ---
+            // Use the direct 'this.app' reference here as well.
+            if (this.app && this.app.nnVisualizer) {
+                this.app.nnVisualizer.setTheme('conscious');
+            }
         }
+
+        this.reset();
+        if (wasRunning) {
+            this.isRunning = true;
+            this.gameStartTime = Date.now();
+        }
+        return this.challengeMode;
     }
 }
 
@@ -3997,21 +4306,32 @@ class UltimateConsciousnessSystem {
         this.consciousLM = new ConsciousLanguageModel();
 
         const gameCanvas = document.getElementById('gameCanvas');
-        if (gameCanvas) this.pongGame = new PongGame(gameCanvas);
+        if (gameCanvas) this.pongGame = new PongGame(gameCanvas, this.player.worldModel, this);
 
         const vizContainer = document.getElementById('visualization-container');
         if (vizContainer) {
             this.visualizer = new ConsciousnessVisualizer(vizContainer);
             this.visualizer.createOrUpdateGraph(initialGraph, 0.5);
-            if (this.player && this.player.worldModel)
-                this.nnVisualizer = new NeuralNetworkVisualizer('nn-visualization-container', this.player.worldModel);
         }
+        
+        // --- THE DEFINITIVE FIX: CREATE TWO SEPARATE VISUALIZERS ---
+        // One for the conscious AI
+        this.nnVisualizer = new NeuralNetworkVisualizer('nn-visualization-container', this.player.worldModel);
+        this.nnVisualizer.setTheme('conscious'); // Blue/Red theme
+
+        // One for the opponent AI (it shares the same predictive brain)
+        this.nnVisualizerOpponent = new NeuralNetworkVisualizer('nn-visualization-container-opponent', this.player.worldModel);
+        this.nnVisualizerOpponent.setTheme('opponent'); // Orange/Purple theme
+
+        // Ensure the correct panels are visible by default
+        document.getElementById('nn-visualizer-panel-opponent').style.display = 'none';
+        document.querySelector('.nn-visualizer-panel').style.display = 'flex'; // The first one
 
         this.startNarrationSystem();
         console.log('✅ System initialized with language integration');
         this.updateStatus('Offline');
     }
-
+    
     toggleConsciousness() {
         this.isRunning = !this.isRunning;
         const btn = document.getElementById('startStopBtn');
@@ -4085,24 +4405,43 @@ class UltimateConsciousnessSystem {
         }
     }
 
+    // In the UltimateConsciousnessSystem class...
+
+    // REPLACE the entire 'gameLoop' method in the 'UltimateConsciousnessSystem' class.
+
     gameLoop() {
         if (!this.isRunning) return;
 
         // 1. ACT
         this.pongGame.setAIAction(this.nextAIAction, this.lastResult ? this.lastResult.dynamicSpeed : null);
 
-        // 2. UPDATE PHYSICS & GET REWARD
-        this.lastFrameReward = this.pongGame.update();
+        // 2. UPDATE PHYSICS & GET REWARD / ACTIVATIONS
+        const gameUpdateResult = this.pongGame.update();
+        this.lastFrameReward = gameUpdateResult.reward;
 
-        // 3. RENDER
-        if (this.lastResult) {
-            this.pongGame.render(this.lastResult.consciousness);
-            this.visualizer.createOrUpdateGraph(this.lastResult.graph, this.lastResult.consciousness);
-            if (this.lastResult.activations) this.nnVisualizer.update(this.lastResult.activations);
+        // 3. RENDER & VISUALIZE
+        const consciousnessValue = this.lastResult ? this.lastResult.consciousness : 0.5;
+        this.pongGame.render(consciousnessValue);
+
+        if (this.lastResult && this.lastResult.graph) {
+            this.visualizer.createOrUpdateGraph(this.lastResult.graph, consciousnessValue);
             this.updateUIDisplays(this.lastResult);
-        } else {
-            this.pongGame.render(0.5);
         }
+        
+        if (this.pongGame.challengeMode && gameUpdateResult.challengeAiActivations) {
+            this.nnVisualizerOpponent.update(gameUpdateResult.challengeAiActivations);
+        } else if (this.lastResult && this.lastResult.activations) {
+            this.nnVisualizer.update(this.lastResult.activations);
+        }
+
+        // --- THE TIMER FIX ---
+        // This code calculates and displays the elapsed game time.
+        const timerEl = document.getElementById('game-length');
+        if (timerEl && this.pongGame.isRunning && this.pongGame.gameStartTime > 0) {
+            const elapsedSeconds = Math.floor((Date.now() - this.pongGame.gameStartTime) / 1000);
+            timerEl.textContent = `${elapsedSeconds}s`;
+        }
+        // --- END OF FIX ---
 
         requestAnimationFrame(() => this.gameLoop());
     }
@@ -4198,8 +4537,6 @@ class UltimateConsciousnessSystem {
     getConsciousnessColor(c){ return c>0.8?'#4CAF50':c>0.6?'#FF9800':c>0.4?'#2196F3':'#9E9E9E'; }
 
     // In the UltimateConsciousnessSystem class, replace the placeholder function with this:
-
-// In the UltimateConsciousnessSystem class, REPLACE the existing function with this one:
 
 updateUIDisplays(result) {
     // --- Guard Clauses: Exit early if essential data is missing ---
@@ -4328,21 +4665,55 @@ updateUIDisplays(result) {
         }
     }
 }
-    resetSystem() {
-        this.isRunning=false;
+    // In the UltimateConsciousnessSystem class...
+
+    // In the UltimateConsciousnessSystem class...
+
+resetSystem() {
+    // Stop all running processes
+    this.isRunning = false;
+    if (this.aiIntervalId) {
         clearInterval(this.aiIntervalId);
-        this.aiIntervalId=null;
-        this.step=0;
-        this.nextAIAction='IDLE';
-        this.lastResult=null;
-        document.getElementById('startStopBtn').textContent='🚀 Awaken Consciousness';
-        this.updateStatus('Reset');
-        this.initializeSystem();
-        if(this.pongGame){this.pongGame.reset();this.pongGame.stop();}
-        if(this.visualizer){this.visualizer.stopAnimation();}
-        console.log('🔄 System reset');
+        this.aiIntervalId = null;
+    }
+    
+    // Stop the game and visualization animations
+    if (this.pongGame) {
+        this.pongGame.stop();
+    }
+    if (this.visualizer) {
+        this.visualizer.stopAnimation();
     }
 
+    this.step = 0;
+    this.nextAIAction = 'IDLE';
+    this.lastResult = null;
+    
+    // --- THE DEFINITIVE FIX IS HERE ---
+    // Re-initialize all core components from scratch.
+    // This creates a new player, a new visualizer, and importantly,
+    // a new pongGame instance that is correctly linked to the new components.
+    this.initializeSystem();
+
+    // Now, update the UI to reflect the fresh state.
+    const startBtn = document.getElementById('startStopBtn');
+    if (startBtn) startBtn.textContent = '🚀 Awaken Consciousness';
+    
+    this.updateStatus('Reset');
+    
+    // Explicitly reset UI text elements to their default state
+    const nnTitle = document.getElementById('nn-visualizer-title');
+    const challengeInfo = document.getElementById('challenge-info');
+    const playerLabel = document.getElementById('player-label');
+
+    if (nnTitle) nnTitle.textContent = "🧠 World Model Activity";
+    if (playerLabel) playerLabel.textContent = "Human Score:";
+    if (challengeInfo) {
+        challengeInfo.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
+    }
+
+    console.log('🔄 System fully reset to a clean initial state.');
+}
     toggleImagination(){ console.log('🔮 Imagination mode toggled'); }
     trainGameGrammar(){ console.log('📝 Training game grammar (stub)'); }
     toggleNarration(){ this.narrationEnabled=!this.narrationEnabled; }
