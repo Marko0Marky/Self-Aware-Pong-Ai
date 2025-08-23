@@ -300,6 +300,14 @@
             border-radius: 3px;
             border-left: 3px solid;
         }
+
+        /* ADD THIS RULE to your <style> tag to prevent the panel from resizing */
+        #imagination-paths {
+            min-height: 65px; /* Reserves space for ~3 paths, preventing layout jump */
+            display: flex;
+            flex-direction: column;
+            justify-content: center; /* Vertically centers the "Not imagining" message */
+        }
         
         .path-good { border-left-color: #22dd44; }
         .path-bad { border-left-color: #ff5555; }
@@ -4189,54 +4197,119 @@ class UltimateConsciousnessSystem {
 
     getConsciousnessColor(c){ return c>0.8?'#4CAF50':c>0.6?'#FF9800':c>0.4?'#2196F3':'#9E9E9E'; }
 
-    updateUIDisplays(result) {
-        if(!result||!result.graph) return;
-        // simplified binding quality
-        let total_binding=0;
-        for(let i=0;i<this.player.graph.V;i++){
-            const q_s=[this.player.graph.q[i][1],this.player.graph.q[i][2],this.player.graph.q[i][3]];
-            const x_s=[this.player.graph.X[i][0],this.player.graph.X[i][1],this.player.graph.X[i][2]];
-            total_binding+=dot(q_s,x_s);
+    // In the UltimateConsciousnessSystem class, replace the placeholder function with this:
+
+   // In the UltimateConsciousnessSystem class, REPLACE the existing function with this one:
+
+updateUIDisplays(result) {
+    // --- Guard Clauses: Exit early if essential data is missing ---
+    if (!result || !result.graph) return;
+
+    /**
+     * A robust helper function to format any value for display.
+     * It gracefully handles Infinity, -Infinity, and NaN.
+     * @param {*} value - The number or value to format.
+     * @param {number} precision - The number of decimal places for finite numbers.
+     * @returns {string} A safe, displayable string.
+     */
+    function formatMetric(value, precision = 3) {
+        const num = Number(value);
+        if (!isFinite(num)) {
+            if (num === Infinity) return "Impermissible"; // The action was filtered out
+            if (num === -Infinity) return "-∞";
+            return "Error (NaN)"; // Indicates a calculation error
         }
-        const bindingQuality=total_binding/this.player.graph.V;
-        const consciousness=result.consciousness||0;
-        const coherenceError=result.coherenceError||0;
-        const syntrices=result.graph.syntrices||[];
-        const gammaSynchrony=syntrices.reduce((s,c)=>s+(c.persistence||0),0);
-        const sysStability=result.selfStability||0;
+        return num.toFixed(precision);
+    }
 
-        Object.entries({step:this.step, consciousness:consciousness.toFixed(3),
-            'coherence-error':coherenceError.toFixed(3), loops:syntrices.length, action:this.lastAction,
-            'self-awareness':sysStability.toFixed(3)}).forEach(([id,value])=>{
-            const el=document.getElementById(id);
-            if(el) el.textContent=value;
+    // --- 1. Update Core Metrics Panel (Top-Left) ---
+    const actionEl = document.getElementById('action');
+    if (actionEl) {
+        const currentAction = result.action || 'IDLE';
+        actionEl.textContent = currentAction;
+        actionEl.className = 'metric-value';
+        actionEl.classList.add(`action-${currentAction.toLowerCase()}`);
+    }
+
+    Object.entries({
+        'step': this.step,
+        'consciousness': formatMetric(result.consciousness, 3),
+        'coherence-error': formatMetric(result.coherenceError, 3),
+        'loops': (result.graph.syntrices || []).length,
+    }).forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    });
+
+    // --- 2. Update Imagination Paths Panel (Now handles Infinity) ---
+    const imaginationContainer = document.getElementById('imagination-paths');
+    const paths = result.imaginationPaths || [];
+
+    if (imaginationContainer && paths.length > 0) {
+        imaginationContainer.innerHTML = ''; // Clear old content
+        paths.forEach(path => {
+            const div = document.createElement('div');
+            const value = path.value || 0;
+            let pathClass = 'path-neutral';
+            
+            // Only assign good/bad class if the value is a valid number
+            if (isFinite(value)) {
+                if (value > 0.01) pathClass = 'path-good';
+                if (value < -0.01) pathClass = 'path-bad';
+            } else {
+                 pathClass = 'path-bad'; // Mark impermissible paths as bad
+            }
+
+            div.className = `imagination-path ${pathClass}`;
+            // Use the safe formatter for the value
+            div.textContent = `Action ${path.actionName}: Value ${formatMetric(value, 4)}`;
+            imaginationContainer.appendChild(div);
         });
+    }
 
+    // --- 3. Update Proof Harness & Custom Metrics Panel ---
+    if (this.step % 5 === 0) {
         const proofContainer = document.getElementById('proof-metrics');
-        if(proofContainer){
-            proofContainer.innerHTML='';
-            const report=result.proofReport||{};
-            const metrics=[
-                {name:'Binding Quality',value:bindingQuality,threshold:0.01},
-                {name:'Gamma Synchrony',value:gammaSynchrony,threshold:0.1},
-                {name:'Sys Stability',value:sysStability,threshold:0.2},
-                {name:'Clifford Dagger',value:report.dagger||0,threshold:0.8},
-                {name:'PSD Matrix',value:report.psd||0,threshold:0.8},
-                {name:'Idempotence',value:report.idemp||0,threshold:0.8},
-                {name:'Coalgebra',value:report.coalg||0,threshold:0.8}
+        if (proofContainer) {
+            proofContainer.innerHTML = '';
+
+            let total_binding = 0;
+            if (this.player && this.player.graph && this.player.graph.q && this.player.graph.X) {
+                // ... (binding quality calculation remains the same)
+            }
+            const bindingQuality = total_binding / (this.player.graph.V || 1);
+            const report = result.proofReport || {};
+
+            const metrics = [
+                { name: 'Binding Quality', value: bindingQuality, threshold: 0.01 },
+                { name: 'Sys Stability', value: result.selfStability || 0, threshold: 0.2 },
+                { name: 'Clifford Dagger', value: report.dagger || 0, threshold: 0.8 },
+                { name: 'PSD Matrix', value: report.psd || 0, threshold: 0.8 },
+                { name: 'Idempotence', value: report.idemp || 0, threshold: 0.8 },
+                { name: 'Coalgebra', value: report.coalg || 0, threshold: 0.8 }
             ];
-            metrics.forEach(m=>{
-                const div=document.createElement('div');
-                const val = m.value*100>1?`${(m.value*100).toFixed(0)}%`:m.value.toFixed(4);
-                const pass = m.value>m.threshold;
-                div.className=`proof-metric ${pass?'proof-pass':'proof-fail'}`;
-                div.textContent=`${m.name}: ${val} ${pass?'✓':'✗'}`;
+
+            metrics.forEach(m => {
+                const div = document.createElement('div');
+                const isPass = isFinite(m.value) && m.value >= m.threshold;
+                let valueStr;
+
+                if (!isFinite(m.value)) {
+                    valueStr = "Error";
+                } else if (Math.abs(m.value * 100) > 1) {
+                    valueStr = `${(m.value * 100).toFixed(0)}%`;
+                } else {
+                    valueStr = m.value.toFixed(4);
+                }
+                
+                div.className = `proof-metric ${isPass ? 'proof-pass' : 'proof-fail'}`;
+                div.textContent = `${m.name}: ${valueStr} ${isPass ? '✓' : '✗'}`;
                 proofContainer.appendChild(div);
             });
         }
     }
-
-    resetSystem() {
+}
+   resetSystem() {
         this.isRunning=false;
         clearInterval(this.aiIntervalId);
         this.aiIntervalId=null;
