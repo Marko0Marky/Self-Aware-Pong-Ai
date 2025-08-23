@@ -3439,8 +3439,6 @@ getConversationSummary() {
 // This agent uses the EXACT SAME WorldModel instance as the conscious AI,
 // but without any of the consciousness-related processing.
 
-// REPLACE the entire BareBonesNNAI class with this improved version.
-
 // REPLACE the entire BareBonesNNAI class with this definitive version.
 
 class BareBonesNNAI {
@@ -3449,7 +3447,7 @@ class BareBonesNNAI {
         this.worldModel = worldModel;
         this.gameWidth = gameDimensions.width;
         this.gameHeight = gameDimensions.height;
-        console.log("🤖 Bare-Bones NN AI Initialized with 'Stuck Reflex' override.");
+        console.log("🤖 Bare-Bones NN AI Initialized with Unified Decision Logic.");
     }
 
     /**
@@ -3458,34 +3456,33 @@ class BareBonesNNAI {
      * @returns {{action: string, activations: object}} The chosen action and the neural activations.
      */
     makeDecision(gameState) {
-        const initialActions = [
+        const allActions = [
             { name: 'UP', vec: [1, 0, 0] },
             { name: 'DOWN', vec: [0, 1, 0] },
             { name: 'IDLE', vec: [0, 0, 1] }
         ];
 
-        let bestAction = 'IDLE';
-        let bestScore = -Infinity;
-        let bestActivations = null;
-        let actionsToConsider = initialActions;
-
-        const dummyQualia = vecZeros(this.worldModel.qDim);
-
-        // --- THE DEFINITIVE "STUCK REFLEX" OVERRIDE ---
+        // --- THE UNIFIED LOGIC FIX ---
+        // First, determine which actions are physically possible based on current position.
         const currentPaddleY = gameState.player.y;
         const paddleHeight = gameState.player.height;
         const isAtTop = currentPaddleY <= 1;
         const isAtBottom = currentPaddleY >= this.gameHeight - paddleHeight - 1;
 
+        let actionsToConsider = allActions;
         if (isAtTop) {
             // If at the top, DO NOT consider moving further up.
-            actionsToConsider = initialActions.filter(a => a.name !== 'UP');
+            actionsToConsider = allActions.filter(a => a.name !== 'UP');
         } else if (isAtBottom) {
             // If at the bottom, DO NOT consider moving further down.
-            actionsToConsider = initialActions.filter(a => a.name !== 'DOWN');
+            actionsToConsider = allActions.filter(a => a.name !== 'DOWN');
         }
-        // If not at a boundary, actionsToConsider remains all three options.
-        // --- END OF REFLEX ---
+        // --- END OF UNIFIED LOGIC ---
+
+        let bestAction = 'IDLE';
+        let bestScore = -Infinity;
+        let bestActivations = null; 
+        const dummyQualia = vecZeros(this.worldModel.qDim);
 
         // The AI now makes a decision ONLY from the list of physically possible moves.
         actionsToConsider.forEach(action => {
@@ -3495,7 +3492,7 @@ class BareBonesNNAI {
             const predictedPaddleY = prediction.nextState[4]; 
             const predictedBallY = prediction.nextState[1];
             
-            // The scoring function is now simple and pure again.
+            // The scoring function is simple and pure.
             let score = -Math.abs(predictedPaddleY - predictedBallY);
 
             if (score > bestScore) {
@@ -3510,20 +3507,15 @@ class BareBonesNNAI {
 
     /**
      * Creates a state vector from the perspective of the main AI (right paddle)
-     * by horizontally flipping the game world. This is CRITICAL for ensuring the
-     * network receives inputs in the format it was trained on.
+     * by horizontally flipping the game world.
      * @param {object} gameState - The original game state.
      * @returns {number[]} The formatted state vector.
      */
     createMirroredStateVector(gameState) {
-        // In challenge mode:
-        // gameState.player is the BareBonesNNAI (left side)
-        // gameState.ai is the Conscious AI (right side)
-
         const mirroredBallX = this.gameWidth - gameState.ball.x;
         const mirroredBallVX = -gameState.ball.vx;
-        const mainAiPaddleY = gameState.player.y; // The NN AI's own paddle
-        const opponentPaddleY = gameState.ai.y;   // The conscious AI's paddle
+        const mainAiPaddleY = gameState.player.y;
+        const opponentPaddleY = gameState.ai.y;
 
         const ballX_norm = mirroredBallX / this.gameWidth;
         const ballY_norm = gameState.ball.y / this.gameHeight;
@@ -3547,8 +3539,8 @@ class BareBonesNNAI {
             difficulty: 'Mirrors Conscious AI',
         };
     }
-}     // Standard Pong AI Algorithm for Challenge Mode (Unchanged)
-        // REPLACE THE StandardPongAI CLASS WITH THIS HARDENED VERSION
+}
+// REPLACE THE StandardPongAI CLASS WITH THIS HARDENED VERSION
 class StandardPongAI {
     constructor() {
         this.difficulty = 0.8; // 0.0 = easy, 1.0 = perfect
