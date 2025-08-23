@@ -1077,31 +1077,31 @@ class AdamOptimizer {
 
 
 class WorldModel {
-    constructor(stateDim = 6, actionDim = 3, qDim = 8) {
+    constructor(stateDim = 8, actionDim = 3, qDim = 8) {
         this.stateDim = stateDim;
         this.actionDim = actionDim;
         this.qDim = qDim;
 
-        // --- SIMPLIFIED ARCHITECTURE: Deep Feed-Forward Network ---
         const inputDim = stateDim + actionDim + qDim;
-        const hidden1 = 128, hidden2 = 128, hidden3 = 64;
+        const hidden1 = 128, hidden2 = 256, hidden3 = 128, hidden4 = 64;
 
-        // Transition Network
         this.transW1 = this.randomMatrix(hidden1, inputDim, 0.1);
         this.transB1 = vecZeros(hidden1);
         this.transW2 = this.randomMatrix(hidden2, hidden1, 0.1);
         this.transB2 = vecZeros(hidden2);
         this.transW3 = this.randomMatrix(hidden3, hidden2, 0.1);
         this.transB3 = vecZeros(hidden3);
-        this.transW4 = this.randomMatrix(stateDim, hidden3, 0.1);
-        this.transB4 = vecZeros(stateDim);
+        this.transW4 = this.randomMatrix(hidden4, hidden3, 0.1);
+        this.transB4 = vecZeros(hidden4);
+        this.transW5 = this.randomMatrix(stateDim, hidden4, 0.1);
+        this.transB5 = vecZeros(stateDim);
 
-        // Reward Network (also simplified for stability)
+        // Reward Network (simplified for stability)
         this.rewardW1 = this.randomMatrix(64, stateDim + qDim, 0.1);
         this.rewardB1 = vecZeros(64);
         this.rewardW2 = this.randomMatrix(1, 64, 0.1);
         this.rewardB2 = [0];
-        
+
         // Qualia Projection
         this.qProjW = this.randomMatrix(qDim, stateDim, 0.2);
         this.qProjB = vecZeros(qDim);
@@ -1109,44 +1109,51 @@ class WorldModel {
         this.memory = [];
         this.fepHistory = [];
 
-        // Optimizers for the layers we will train
+        // Optimizers for layers we will train
         this.adam_transW4 = new AdamOptimizer([stateDim, hidden3]);
         this.adam_transB4 = new AdamOptimizer(stateDim);
         this.adam_transW3 = new AdamOptimizer([hidden3, hidden2]);
         this.adam_transB3 = new AdamOptimizer(hidden3);
+        this.adam_rewardW1 = new AdamOptimizer([64, stateDim + qDim]);
+        this.adam_rewardB1 = new AdamOptimizer(64);
+        this.adam_rewardW2 = new AdamOptimizer([1, 64]);
+        this.adam_rewardB2 = new AdamOptimizer(1);
     }
-    
-    // --- HELPER METHODS ---
+
+    // --- Helper Methods ---
     randomMatrix(rows, cols, scale = 0.1) {
         const M = new Array(rows);
         for (let i = 0; i < rows; i++) M[i] = new Array(cols).fill(0).map(() => (Math.random() * 2 - 1) * scale);
         return M;
     }
-    qProj(state) { return tanhVec(addVec(matVecMul(this.qProjW, state), this.qProjB)); }
-    storeTransition(s, a, nextS, r, Q, nextQ) { this.memory.push({ s, a, nextS, r, Q, nextQ }); if (this.memory.length > 2000) this.memory.shift(); }
 
-    // --- CORE LOGIC ---
+    qProj(state) { return tanhVec(addVec(matVecMul(this.qProjW, state), this.qProjB)); }
+
+    storeTransition(s, a, nextS, r, Q, nextQ) { 
+        this.memory.push({ s, a, nextS, r, Q, nextQ }); 
+        if (this.memory.length > 2000) this.memory.shift(); 
+    }
+
+    // --- Core Logic ---
     predict(state, action, q) {
         const activations = {};
         if (state.some(isNaN) || action.some(isNaN) || q.some(isNaN)) {
-             return { nextState: state, nextQ: q, reward: 0, fep: 1, activations: {} };
+            return { nextState: state, nextQ: q, reward: 0, fep: 1, activations: {} };
         }
 
         const input = state.concat(action).concat(q);
-        activations.input = state; // Visualize just the game state part
+        activations.input = state; 
 
         // Forward pass through transition network
         const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
         const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
-        activations.hidden2 = h2_trans; // Use this as the second visualization layer
+        activations.hidden2 = h2_trans; 
         const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
         let nextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
         activations.output = nextState;
-
-        // The "lstm" key is still expected by the visualizer, so we provide a placeholder.
         activations.lstm = h1_trans; 
 
-        nextState = nextState.map((val, i) => clamp(isFinite(val) ? val : 0, -2.0, 2.0));
+        nextState = nextState.map((val) => clamp(isFinite(val) ? val : 0, -2.0, 2.0));
         const nextQ = this.qProj(nextState);
 
         // Forward pass through reward network
@@ -1157,37 +1164,84 @@ class WorldModel {
         return { nextState: new Float32Array(nextState), nextQ, reward, fep, activations };
     }
 
+    // --- Train from Memory ---
     trainFromMemory(batchSize = 16) {
         if (this.memory.length < batchSize) return;
         const gradClip = 1.0;
+        const lambda_reward_into_state = 0.01;
 
         for (let k = 0; k < Math.min(batchSize, this.memory.length); k++) {
             const tr = this.memory[Math.floor(Math.random() * this.memory.length)];
-            if (!tr || !tr.s.every(isFinite) || !tr.a.every(isFinite) || !tr.Q.every(isFinite) || !tr.nextS.every(isFinite)) continue;
+            if (!tr) continue;
+            if (![tr.s, tr.a, tr.Q, tr.nextS].every(arr => Array.isArray(arr) && arr.every(isFinite))) continue;
 
-            // --- STABLE TRAINING LOOP ---
+            // --- Forward Transition ---
             const input = tr.s.concat(tr.a).concat(tr.Q);
             const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
             const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
             const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
             const predNextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
-
             if (predNextState.some(isNaN)) continue;
 
+            // --- Transition Loss & grads ---
             let errS = sub(tr.nextS, predNextState).map(e => clamp(e, -gradClip, gradClip));
 
-            // Backpropagate error one layer to get gradient for W4
+            // --- Reward Network ---
+            const nextQ_pred = this.qProj(predNextState);
+            const r_h1 = tanhVec(addVec(matVecMul(this.rewardW1, predNextState.concat(nextQ_pred)), this.rewardB1));
+            const r_pred = (matVecMul(this.rewardW2, r_h1)[0] + this.rewardB2[0]);
+            const errR = clamp(r_pred - tr.r, -gradClip, gradClip);
+
+            // --- Reward grads ---
+            const grad_rewardW2 = zeros(1, r_h1.length);
+            for (let j = 0; j < r_h1.length; j++) grad_rewardW2[0][j] = errR * r_h1[j];
+            const grad_rewardB2 = [errR];
+
+            const err_h1 = new Array(r_h1.length);
+            for (let j = 0; j < r_h1.length; j++) {
+                err_h1[j] = errR * this.rewardW2[0][j] * (1 - r_h1[j]*r_h1[j]);
+            }
+
+            const reward_in = predNextState.concat(nextQ_pred);
+            const grad_rewardW1 = zeros(r_h1.length, reward_in.length);
+            for (let i = 0; i < r_h1.length; i++) {
+                for (let j = 0; j < reward_in.length; j++) {
+                    grad_rewardW1[i][j] = err_h1[i] * reward_in[j];
+                }
+            }
+            const grad_rewardB1 = err_h1.slice();
+
+            const W1T = transpose(this.rewardW1);
+            const dL_din_full = new Array(W1T.length).fill(0);
+            for (let j = 0; j < W1T.length; j++) {
+                let acc = 0;
+                for (let i = 0; i < err_h1.length; i++) acc += W1T[j][i] * err_h1[i];
+                dL_din_full[j] = acc;
+            }
+            const dL_dstate_from_reward = dL_din_full.slice(0, this.stateDim);
+            for (let i = 0; i < this.stateDim; i++) errS[i] += lambda_reward_into_state * dL_dstate_from_reward[i];
+
+            // --- Apply transition grads ---
             const grad_transW4 = zeros(this.stateDim, h3_trans.length);
-            for (let i = 0; i < this.stateDim; i++) for (let j = 0; j < h3_trans.length; j++) grad_transW4[i][j] = errS[i] * h3_trans[j];
+            for (let i = 0; i < this.stateDim; i++) {
+                for (let j = 0; j < h3_trans.length; j++) grad_transW4[i][j] = errS[i] * h3_trans[j];
+            }
             this.adam_transW4.update(this.transW4, grad_transW4);
             this.adam_transB4.update(this.transB4, errS);
 
-            // Backpropagate error two layers to get gradient for W3
-            let err_h3 = matVecMul(transpose(this.transW4), errS).map((e, i) => e * (1 - h3_trans[i] ** 2));
+            const err_h3 = matVecMul(transpose(this.transW4), errS).map((e, i) => e * (1 - h3_trans[i] ** 2));
             const grad_transW3 = zeros(h3_trans.length, h2_trans.length);
-            for(let i=0; i<h3_trans.length; i++) for(let j=0; j<h2_trans.length; j++) grad_transW3[i][j] = err_h3[i] * h2_trans[j];
+            for (let i = 0; i < h3_trans.length; i++) {
+                for (let j = 0; j < h2_trans.length; j++) grad_transW3[i][j] = err_h3[i] * h2_trans[j];
+            }
             this.adam_transW3.update(this.transW3, grad_transW3);
             this.adam_transB3.update(this.transB3, err_h3);
+
+            // --- Apply reward grads ---
+            this.adam_rewardW2.update(this.rewardW2, grad_rewardW2);
+            this.adam_rewardB2.update(this.rewardB2, grad_rewardB2);
+            this.adam_rewardW1.update(this.rewardW1, grad_rewardW1);
+            this.adam_rewardB1.update(this.rewardB1, grad_rewardB1);
         }
     }
 
@@ -1204,7 +1258,8 @@ class WorldModel {
             }
             paths.push({ action: ai, value: total_reward, actionName });
         }
-        paths.sort((a, b) => b.value - a.value); return paths;
+        paths.sort((a, b) => b.value - a.value);
+        return paths;
     }
 }
 
@@ -1696,10 +1751,77 @@ runAmortizedSheafDiffusion() {
 
 // In the UltimateSCANPlayer class
 
+// Add this to UltimateSCANPlayer
+/**
+ * Safely predicts the next game state and neural activations using a surgical validation approach.
+ * This version avoids "dampening" the network by only validating internal activations for finiteness,
+ * while clamping only the initial inputs and final outputs to their expected ranges.
+ *
+ * @param {number[] | Float32Array} stateVec - The current state vector of the game.
+ * @param {number[] | Float32Array} actionVec - The action vector to be simulated.
+ * @param {number[] | Float33Array} qualiaVec - The aggregate qualia vector.
+ * @returns {{nextState: number[], nextQ: number[], reward: number, fep: number, activations: object}} A prediction object with validated values.
+ */
+safePredict(stateVec, actionVec, qualiaVec) {
+    /**
+     * Converts an array-like object to a standard array and clamps its values.
+     * Used for inputs and final outputs that must be within a strict range.
+     */
+    function clampArray(arr, min, max) {
+        if (!arr) return [];
+        return Array.from(arr).map(x => (isFinite(x) ? Math.min(Math.max(x, min), max) : 0));
+    }
+
+    /**
+     * Converts an array-like object to a standard array and replaces non-finite values with 0.
+     * Used for internal activations to prevent crashes without dampening the signal.
+     */
+    function validateFinite(arr) {
+        if (!arr) return [];
+        return Array.from(arr).map(x => (isFinite(x) ? x : 0));
+    }
+
+    // 1️⃣ CLAMP INPUTS: It's good practice to ensure inputs are in a known range.
+    const safeState = clampArray(stateVec, -2.0, 2.0);   // Game state can be slightly outside [-1, 1]
+    const safeAction = clampArray(actionVec, 0, 1);
+    const safeQualia = clampArray(qualiaVec, -1, 1);
+
+    try {
+        let prediction = this.worldModel.predict(safeState, safeAction, safeQualia);
+
+        // 2️⃣ VALIDATE INTERNAL ACTIVATIONS: The surgical part.
+        // We ensure stability without crushing the signal magnitude.
+        if (prediction.activations && typeof prediction.activations === 'object') {
+            for (const key in prediction.activations) {
+                if (Object.hasOwnProperty.call(prediction.activations, key)) {
+                    prediction.activations[key] = validateFinite(prediction.activations[key]);
+                }
+            }
+        } else {
+            prediction.activations = {};
+        }
+
+        // 3️⃣ CLAMP FINAL OUTPUT: The predicted next state must be in a plausible range for the game.
+        prediction.nextState = clampArray(prediction.nextState, -2.0, 2.0);
+
+        return prediction;
+
+    } catch (err) {
+        console.error("safePredict caught a critical exception:", err);
+        return {
+            nextState: vecZeros(stateVec.length),
+            nextQ: vecZeros(this.worldModel.qDim),
+            reward: 0,
+            fep: 1,
+            activations: {}
+        };
+    }
+}
+
 async forward(gameState, shouldImagine) {
     this.internalStep++;
     
-    // 1. PERCEIVE & THINK
+    // 1. PERCEIVE & THINK (Your existing logic is preserved)
     const perceptionResult = this.perceive(gameState);
     this.graph = perceptionResult.graph;
     this.updateDiachronicStack(this.graph);
@@ -1708,61 +1830,95 @@ async forward(gameState, shouldImagine) {
     const { C } = calculateFreeEnergy(this.graph, perceptionResult.coherenceError, fe_params);
     this.lastC = C;
 
-    let finalActivations = null; // Variable to hold the chosen activations
+    let finalActivations = null;
+    
+    // Your caching logic is preserved
+    this._lastStateVec = this.gameStateToVec(gameState);
+    this._lastQAgg = this.getAggregateQualia(this.graph);
+    this._lastActionVec = (this.lastChosenAction === 'UP') ? [1,0,0]
+                   : (this.lastChosenAction === 'DOWN') ? [0,1,0]
+                   : [0,0,1];
 
-    shouldImagine = this.internalStep % 5 === 0;
-
-    if (shouldImagine) {
-        // 2. IMAGINE
-        const imaginationFutures = [];
-        const actions = ['UP', 'DOWN', 'IDLE'];
+    // =======================================================================
+    // === INTEGRATED FIX: Epsilon-Greedy Exploration to prevent getting stuck ===
+    // =======================================================================
+    const explorationRate = 0.3 * (1 - this.selfStability); // More stable AI explores less
+    const availableActions = ['UP', 'DOWN', 'IDLE'];
+    
+    if (Math.random() < explorationRate) {
+        // --- EXPLORE: Choose a completely random action ---
+        this.lastChosenAction = availableActions[Math.floor(Math.random() * availableActions.length)];
         
-        for(const action of actions) {
-            const perturbation = this.createImaginedPerturbation(gameState, action);
-            const futureSim = this.settleGraphState(cloneGraph(this.graph), perturbation, this.graph.q);
-            const imagined_params = this.getParams(futureSim, futureSim.graph);
-            
-            // Run the prediction to get both Free Energy and Activations
-            // THE FIX WAS HERE: Changed 'this.player.worldModel' to 'this.worldModel'
-            const worldModelPrediction = this.worldModel.predict(
-                this.gameStateToVec(gameState),
-                action === 'UP' ? [1,0,0] : action === 'DOWN' ? [0,1,0] : [0,0,1],
-                this.getAggregateQualia(this.graph)
-            );
-            
-            let { freeEnergy: futureFE } = calculateFreeEnergy(futureSim.graph, futureSim.coherenceError, imagined_params);
-            
-            if (action === this.lastChosenAction) {
-                futureFE -= 0.008;
-            }
-
-            imaginationFutures.push({ action, freeEnergy: futureFE, activations: worldModelPrediction.activations });
-        }
-
-        // 3. DECIDE
-        const filteredResults = this.ciFilter.filter(imaginationFutures, this, gameState);
-        this.lastImagination = filteredResults;
-        
-        const bestFuture = filteredResults.reduce((best, current) => (current.freeEnergy < best.freeEnergy) ? current : best, { freeEnergy: Infinity });
-
-        if (bestFuture && isFinite(bestFuture.freeEnergy)) {
-            this.lastChosenAction = bestFuture.action;
-            finalActivations = bestFuture.activations;
-        } else {
-            this.lastChosenAction = this.lastChosenAction || 'IDLE';
-        }
-    } else {
-        // If not imagining, run a single prediction for the current action to get activations
-        // THE FIX WAS HERE: Changed 'this.player.worldModel' to 'this.worldModel'
-         const worldModelPrediction = this.worldModel.predict(
+        // We still run a prediction to get activations for the visualizer
+        const pred = this.safePredict(
             this.gameStateToVec(gameState),
             this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1],
             this.getAggregateQualia(this.graph)
         );
-        finalActivations = worldModelPrediction.activations;
+        finalActivations = pred.activations;
+        this.lastImagination = []; // Clear imagination paths as this was a random choice
+
+    } else {
+        // --- EXPLOIT: Use the existing imagination/decision logic ---
+        shouldImagine = this.internalStep % 5 === 0;
+
+        if (shouldImagine) {
+            const imaginationFutures = [];
+            
+            for(const action of availableActions) {
+                const perturbation = this.createImaginedPerturbation(gameState, action);
+                const futureSim = this.settleGraphState(cloneGraph(this.graph), perturbation, this.graph.q);
+                const imagined_params = this.getParams(futureSim, futureSim.graph);
+                
+                const worldModelPrediction = this.safePredict(
+                    this.gameStateToVec(gameState),
+                    action === 'UP' ? [1,0,0] : action === 'DOWN' ? [0,1,0] : [0,0,1],
+                    this.getAggregateQualia(this.graph)
+                );
+                
+                let { freeEnergy: futureFE } = calculateFreeEnergy(futureSim.graph, futureSim.coherenceError, imagined_params);
+                
+                if (action === this.lastChosenAction) {
+                    futureFE -= 0.008;
+                }
+
+                // --- INTEGRATED FIX: Add a Boundary Penalty ---
+                // This penalizes any imagined future where the paddle is stuck at the edge.
+                const imaginedPaddleY = worldModelPrediction.nextState[4] * 300; // Un-normalize paddle Y
+                if (imaginedPaddleY <= 1 || imaginedPaddleY >= 299) {
+                    futureFE += 0.1; // Add a significant "discomfort" penalty
+                }
+                // --- End of Boundary Penalty Fix ---
+
+                imaginationFutures.push({ action, freeEnergy: futureFE, activations: worldModelPrediction.activations });
+            }
+
+            const filteredResults = this.ciFilter.filter(imaginationFutures, this, gameState);
+            this.lastImagination = filteredResults;
+            
+            const bestFuture = filteredResults.reduce((best, current) => (current.freeEnergy < best.freeEnergy) ? current : best, { freeEnergy: Infinity });
+
+            if (bestFuture && isFinite(bestFuture.freeEnergy)) {
+                this.lastChosenAction = bestFuture.action;
+                finalActivations = bestFuture.activations;
+            } else {
+                this.lastChosenAction = this.lastChosenAction || 'IDLE';
+            }
+        } else {
+            // Your existing logic for when not imagining is preserved
+            const worldModelPrediction = this.safePredict(
+                this.gameStateToVec(gameState),
+                this.lastChosenAction === 'UP' ? [1,0,0] : this.lastChosenAction === 'DOWN' ? [0,1,0] : [0,0,1],
+                this.getAggregateQualia(this.graph)
+            );
+            finalActivations = worldModelPrediction.activations;
+        }
     }
+    // =======================================================================
+    // === End of Integrated Fix ===
+    // =======================================================================
     
-    // 4. PREPARE & RETURN
+    // Your existing return logic is preserved
     this.updateYonedaMemory(gameState, this.lastChosenAction, { C });
     const formattedPaths = this.lastImagination.map(path => ({
         actionName: path.action,
@@ -1784,15 +1940,58 @@ async forward(gameState, shouldImagine) {
 
 // ADD THIS NEW METHOD TO THE UltimateSCANPlayer CLASS
 
-learn(reward, consciousness) {
-    // This creates the feedback loop for the cognitive components.
-    // A positive reward and high consciousness mean the previous state was "good".
-    const gradient = reward * consciousness;
+// REPLACE the entire learn method in UltimateSCANPlayer
+learn(reward, consciousness, newGameState = null) {
+    // --- 1) Advantage-shaped feedback for ASTFilter ---
+    if (this.rewardBaseline === undefined) {
+        this.rewardBaseline = 0;
+        this.baselineBeta = 0.99; // slow EMA
+        console.debug("[INIT] rewardBaseline initialized to 0");
+    }
 
-    // Provide feedback to the Attention Schema component.
-    // This teaches the AI to pay attention to sensory data that leads to good outcomes.
-    if (Math.abs(gradient) > 0.01) {
-        this.astFilter.update(gradient, 1e-3, this.graph.X);
+    const oldBaseline = this.rewardBaseline;
+    this.rewardBaseline = this.baselineBeta * this.rewardBaseline + (1 - this.baselineBeta) * reward;
+    const advantage = reward - this.rewardBaseline;
+
+    console.debug(`[REWARD] reward=${reward.toFixed(4)}, baseline=${oldBaseline.toFixed(4)}→${this.rewardBaseline.toFixed(4)}, advantage=${advantage.toFixed(4)}`);
+
+    // FE-weight calculation
+    const epsC = 1e-8;
+    const baseEnergy = -Math.log(
+        Math.max(epsC, Math.min(1 - epsC, consciousness)) /
+        Math.max(epsC, 1 - Math.min(1 - epsC, consciousness))
+    );
+    const feWeight = 1 / (1 + Math.max(0, baseEnergy));
+    const gradient = advantage * consciousness * feWeight;
+
+    console.debug(`[CONSCIOUSNESS] C=${consciousness.toFixed(4)}, baseEnergy=${baseEnergy.toFixed(4)}, feWeight=${feWeight.toFixed(4)}, gradient=${gradient.toExponential(3)}`);
+
+    if (Math.abs(gradient) > 1e-3) {
+        const updateResult = this.astFilter.update(gradient, 1e-3, this.graph.X);
+        console.debug(`[ASTFilter] Update applied, grad=${gradient.toExponential(3)}, lr=1e-3, result=${JSON.stringify(updateResult)}`);
+    } else {
+        console.debug(`[ASTFilter] Gradient too small (|${gradient.toExponential(3)}| < 1e-3) → no update`);
+    }
+
+    // --- 2) World Model memory + training ---
+    if (this._lastStateVec && this._lastActionVec && this._lastQAgg) {
+        const nextS = newGameState ? this.gameStateToVec(newGameState) : this._lastStateVec;
+        const nextQ = this.getAggregateQualia(this.graph);
+
+        this.worldModel.storeTransition(
+            this._lastStateVec.slice(),
+            this._lastActionVec.slice(),
+            nextS.slice(),
+            reward,
+            this._lastQAgg.slice(),
+            nextQ.slice()
+        );
+        console.debug(`[WorldModel] Transition stored: r=${reward.toFixed(4)}, |s|=${this._lastStateVec.length}, |a|=${this._lastActionVec.length}`);
+
+        const trainStats = this.worldModel.trainFromMemory(16);
+        console.debug(`[WorldModel] Trained on minibatch=16, stats=${JSON.stringify(trainStats)}`);
+    } else {
+        console.debug(`[WorldModel] Skipped training (missing state/action/qualia history)`);
     }
 }
 
@@ -1905,7 +2104,7 @@ createPerturbation(ball, paddleY) {
         const currentStateVec = this.gameStateToVec(gameState);
         const actionVec = action === 'UP' ? [1, 0, 0] : action === 'DOWN' ? [0, 1, 0] : [0, 0, 1];
         
-        const { nextState } = this.worldModel.predict(currentStateVec, actionVec, vecZeros(this.worldModel.qDim));
+        const { nextState } = this.safePredict(currentStateVec, actionVec, vecZeros(this.worldModel.qDim));
         
         const nextBallX = nextState[0];
         const nextBallY = nextState[1];
@@ -1934,9 +2133,25 @@ getParams(perceptionResult) {
     }; 
 }
 
-    gameStateToVec(gs) { 
-        return [gs.ball.x/400, gs.ball.y/300, gs.ball.vx/10, gs.ball.vy/10, gs.ai.y/300, gs.player.y/300]; 
-    }
+    gameStateToVec(gs) {
+    const opponent = gs.player;
+    const ball = gs.ball;
+    const ai = gs.ai;
+
+    const ballX = ball.x / this.width;
+    const ballY = ball.y / this.height;
+    const ballVX = ball.vx / 10.0;
+    const ballVY = ball.vy / 10.0;
+    const aiY = ai.y / this.height;
+
+    // New relational features
+    const opponentY = opponent.y / this.height;
+    const opponentVY = (opponent.vy || 0) / 10.0;
+    const ballToOpponentY = ballY - opponentY;
+
+    return [ballX, ballY, ballVX, ballVY, aiY, opponentY, opponentVY, ballToOpponentY];
+}
+
     
     // REPLACE the entire updateDiachronicStack function
 updateDiachronicStack(graph) {
@@ -2054,9 +2269,97 @@ function calculateFreeEnergy(G, coherenceError, params = {}) {
     };
 }
 
+class StabilizedWorldModel {
+    constructor(qDim = 8) {
+        this.qDim = qDim;
+        this.memory = [];        // transitions for learning
+        this.fepHistory = [];    // free energy principle tracking
+        this.maxClamp = 10;      // max absolute value for states
+    }
+
+    // Convert game state vector to input vector (stub, adapt as needed)
+    gameStateToVec(gameState) {
+        return [
+            gameState.ball.x / 400,
+            gameState.ball.y / 300,
+            gameState.ball.vx / 10,
+            gameState.ball.vy / 10,
+            gameState.ai.y / 300,
+            gameState.player.y / 300
+        ];
+    }
+
+    // Predict next state given state and action
+    predict(currentStateVec, actionVec, qualiaVec) {
+        // --- Step 1: Clip inputs to avoid NaNs ---
+        const safeState = currentStateVec.map(v => isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);
+        const safeAction = actionVec.map(v => isFinite(v) ? v : 0);
+        const safeQualia = qualiaVec.map(v => isFinite(v) ? v : 0);
+
+        // --- Step 2: Simple dynamics simulation with noise ---
+        let nextState = safeState.map((v, i) => {
+            // Apply a linear prediction plus small stochastic noise
+            const delta = 0.9 * v + 0.1 * safeAction[i % safeAction.length];
+            const noise = (Math.random() - 0.5) * 0.01;
+            return delta + noise;
+        });
+
+        // --- Step 3: Clamp outputs to safe range ---
+        nextState = nextState.map(v => {
+            if (!isFinite(v)) return 0;
+            return Math.max(-this.maxClamp, Math.min(this.maxClamp, v));
+        });
+
+        return { nextState };
+    }
+
+    // Store transitions for training
+    storeTransition(lastState, actionVec, nextState, reward, qualiaStateQ, nextQualiaStateQ) {
+        this.memory.push({ lastState, actionVec, nextState, reward, qualiaStateQ, nextQualiaStateQ });
+        // Optional: trim memory to avoid overflow
+        if (this.memory.length > 1000) this.memory = this.memory.slice(-500);
+    }
+
+    // Train world model from memory (stub)
+    trainFromMemory() {
+        // You could implement an online learning step here
+        // For now, just track free energy stability
+        this.fepHistory.push(Math.random() * 0.01);
+        if (this.fepHistory.length > 100) this.fepHistory = this.fepHistory.slice(-50);
+    }
+
+    // Imagined perturbation for universalization tests
+    createImaginedPerturbation(simState, action) {
+        // Small random perturbation to simulate hypothetical futures
+        return {
+            ball: {
+                x: simState.ball.x + (Math.random() - 0.5) * 5,
+                y: simState.ball.y + (Math.random() - 0.5) * 5,
+                vx: simState.ball.vx,
+                vy: simState.ball.vy
+            },
+            ai: { ...simState.ai },
+            player: { ...simState.player }
+        };
+    }
+
+    // Settle graph state (stub)
+    settleGraphState(graphCopy, perturbation, q) {
+        // Simulate some coherence error
+        const coherenceError = Math.random() * 0.05;
+        return { coherenceError };
+    }
+}
+
+// Helper to create zero vector
+function vecZeros(dim) { return Array(dim).fill(0); }
+
 // ===== CATEGORICAL IMPERATIVE FILTER =====
 // REPLACE THE ENTIRE CategoricalImperativeFilter CLASS WITH THIS PATCHED VERSION
-
+ 
+// ============================
+// CategoricalImperativeFilter
+// ============================
 class CategoricalImperativeFilter {
     constructor() {
         this.j_oracle = (gameState, action) => {
@@ -2079,7 +2382,7 @@ class CategoricalImperativeFilter {
             }
 
             const { isUniversal, contradictionError } = this.runUniversalizationTest(future.action, model, gameState);
-            
+
             if (!isUniversal) {
                 future.freeEnergy = Infinity;
                 future.reason = `Failed universalization (H¹=${contradictionError.toFixed(4)})`;
@@ -2091,45 +2394,43 @@ class CategoricalImperativeFilter {
     }
 
     runUniversalizationTest(action, model, gameState) {
-        // Create a deep enough copy to avoid side effects
-        let simState = { ...gameState, ball: {...gameState.ball}, ai: {...gameState.ai} };
+        // Create deep copy to avoid side effects
+        let simState = { ...gameState, ball: { ...gameState.ball }, ai: { ...gameState.ai } };
         let totalError = 0;
         const steps = 5;
 
         for (let i = 0; i < steps; i++) {
+            // 1. Imagined graph perturbation
             const perturbation = model.createImaginedPerturbation(simState, action);
             const { coherenceError } = model.settleGraphState(cloneGraph(model.graph), perturbation, model.graph.q);
             totalError += coherenceError;
 
+            // 2. Predict next state safely
             const currentStateVec = model.gameStateToVec(simState);
             const actionVec = action === 'UP' ? [1, 0, 0] : action === 'DOWN' ? [0, 1, 0] : [0, 0, 1];
-            const { nextState } = model.worldModel.predict(currentStateVec, actionVec, vecZeros(model.worldModel.qDim));
+            const pred = model.safePredict(currentStateVec, actionVec, vecZeros(model.worldModel.qDim));
 
-            // FIX 2: ROBUSTNESS CHECK - Prevent NaN propagation from the world model
-            // This check stops the simulation if the world model becomes unstable, preventing a game freeze.
-            if (!nextState.every(isFinite)) {
+            // 3. Clamp and handle non-finite next state
+            if (!pred.nextState.every(isFinite)) {
                 console.warn(`World model produced non-finite state during universalization test for action ${action}. Aborting test.`);
-                totalError = Infinity; // Force the test to fail without crashing.
-                break; // Exit the simulation loop immediately.
+                totalError = Infinity;
+                break;
             }
 
-            const nextBall = {
+            const nextState = pred.nextState.map(v => clamp(v, -10, 10)); // clamp to safe range
+
+            simState.ball = {
                 x: nextState[0] * 400,
                 y: nextState[1] * 300,
                 vx: nextState[2] * 10,
                 vy: nextState[3] * 10
             };
-            simState.ball = nextBall;
         }
-        
+
         const avgError = clamp(totalError / steps, 0, 10);
-        
-        // FIX 1: THRESHOLD ADJUSTMENT
-        // The previous threshold of 0.01 was too strict for the new, dynamic coherenceError.
-        // We raise it to a more reasonable level that allows for normal system fluctuation.
         return { isUniversal: avgError < 0.5, contradictionError: avgError };
     }
-}    
+}
 // ===== GRAMMAR MODEL =====// ===== GRAMMAR MODEL =====
 
         class GrammarModel {
@@ -3145,6 +3446,12 @@ class StandardPongAI {
     }
 }
                 // REPLACE THE PongGame CLASS WITH THIS VERSION
+// =======================================================================
+// === START OF CORRECTED PongGame CLASS ===
+// This version removes the internal animation loop to prevent conflicts
+// with the main async game loop.
+// =======================================================================
+
 class PongGame {
     constructor(canvas) {
         this.canvas = canvas;
@@ -3153,23 +3460,24 @@ class PongGame {
         this.height = canvas.height;
 
         this.baseSpeed = { ball: 5, paddle: 8 };
-        
-        // Challenge Mode Setup
         this.challengeMode = false;
-        this.standardAI = new StandardPongAI(); // Creates the hardened AI
+        this.standardAI = new StandardPongAI();
         this.challengeStats = { consciousWins: 0, standardWins: 0, totalGames: 0 };
-        
+
         this.reset();
         this.setupControls();
     }
 
     reset() {
-        const ballSpeed = this.baseSpeed.ball;
-        const paddleSpeed = this.baseSpeed.paddle;
-
-        this.ball = { x: this.width / 2, y: this.height / 2, vx: (Math.random() > 0.5 ? 1 : -1) * ballSpeed, vy: (Math.random() - 0.5) * ballSpeed * 0.6, radius: 8 };
-        this.player = { x: 20, y: this.height / 2 - 40, width: 10, height: 80, speed: paddleSpeed };
-        this.ai = { x: this.width - 30, y: this.height / 2 - 40, width: 10, height: 80, speed: paddleSpeed };
+        this.ball = { 
+            x: this.width / 2, 
+            y: this.height / 2, 
+            vx: (Math.random() > 0.5 ? 1 : -1) * this.baseSpeed.ball, 
+            vy: (Math.random() - 0.5) * this.baseSpeed.ball * 0.6, 
+            radius: 8 
+        };
+        this.player = { x: 20, y: this.height / 2 - 40, width: 10, height: 80, speed: this.baseSpeed.paddle };
+        this.ai = { x: this.width - 30, y: this.height / 2 - 40, width: 10, height: 80, speed: this.baseSpeed.paddle };
         this.score = { player: 0, ai: 0 };
         this.isRunning = false;
         this.gameStartTime = 0;
@@ -3177,8 +3485,7 @@ class PongGame {
 
     setupControls() {
         this.canvas.addEventListener('mousemove', (event) => {
-            if (this.challengeMode) return; // Mouse is disabled in Challenge Mode
-
+            if (this.challengeMode) return;
             const rect = this.canvas.getBoundingClientRect();
             const mouseY = event.clientY - rect.top;
             let newY = mouseY - this.player.height / 2;
@@ -3186,24 +3493,32 @@ class PongGame {
         });
     }
 
-    // REPLACE the setAIAction function in the PongGame class
+    // --- STATE VECTOR FOR AI ---
+    getStateVector() {
+        return [
+            this.ball.x / this.width,
+            this.ball.y / this.height,
+            this.ball.vx / this.baseSpeed.ball,
+            this.ball.vy / this.baseSpeed.ball,
+            this.ai.y / this.height,
+            this.player.y / this.height
+        ];
+    }
 
-setAIAction(action, speed) {
-    // If a specific speed is provided by the AI, use it.
-    // Otherwise, fall back to the AI's default physical speed.
-    const moveSpeed = speed || this.ai.speed;
+    // --- METHODS TO BE CALLED EXTERNALLY BY THE MAIN LOOP ---
+    start() {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        this.gameStartTime = Date.now();
+    }
 
-    if (action === 'UP') this.ai.y -= moveSpeed;
-    if (action === 'DOWN') this.ai.y += moveSpeed;
-    
-    // Ensure the paddle stays within the game boundaries.
-    this.ai.y = Math.max(0, Math.min(this.height - this.ai.height, this.ai.y));
-}
+    stop() {
+        this.isRunning = false;
+    }
 
     update() {
         if (!this.isRunning) return 0;
-        
-        // In Challenge Mode, the standardAI controls the left paddle
+
         if (this.challengeMode) {
             const gameStateForStandardAI = { ball: this.ball, paddle: this.player, height: this.height };
             const action = this.standardAI.makeDecision(gameStateForStandardAI);
@@ -3212,10 +3527,10 @@ setAIAction(action, speed) {
             this.player.y = Math.max(0, Math.min(this.height - this.player.height, this.player.y));
         }
 
-        // --- Physics, Collision, Scoring... (rest of the function is correct) ---
         this.ball.x += this.ball.vx;
         this.ball.y += this.ball.vy;
-        if (this.ball.y <= this.ball.radius || this.ball.y >= this.height - this.ball.radius) this.ball.vy *= -1;
+        if (this.ball.y <= this.ball.radius || this.ball.y >= this.height - this.ball.radius) 
+            this.ball.vy *= -1;
 
         const playerCollision = (this.ball.vx < 0 && this.ball.x - this.ball.radius < this.player.x + this.player.width && this.ball.y > this.player.y && this.ball.y < this.player.y + this.player.height);
         const aiCollision = (this.ball.vx > 0 && this.ball.x + this.ball.radius > this.ai.x && this.ball.y > this.ai.y && this.ball.y < this.ai.y + this.ai.height);
@@ -3240,16 +3555,9 @@ setAIAction(action, speed) {
             this.resetBall();
             if (this.challengeMode) this.handleChallengeScoring('player');
         }
-        
+
         this.updateScoreDisplay();
         return reward;
-    }
-
-    resetBall() {
-        this.ball.x = this.width / 2;
-        this.ball.y = this.height / 2;
-        this.ball.vx = (Math.random() > 0.5 ? 1 : -1) * this.baseSpeed.ball;
-        this.ball.vy = (Math.random() - 0.5) * this.baseSpeed.ball;
     }
 
     render(aiConsciousness = 0.5) {
@@ -3265,57 +3573,48 @@ setAIAction(action, speed) {
         this.ctx.fill();
     }
 
-    start() {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        this.gameStartTime = Date.now();
+    // --- HELPER AND UTILITY FUNCTIONS ---
+    resetBall() {
+        this.ball.x = this.width / 2;
+        this.ball.y = this.height / 2;
+        this.ball.vx = (Math.random() > 0.5 ? 1 : -1) * this.baseSpeed.ball;
+        this.ball.vy = (Math.random() - 0.5) * this.baseSpeed.ball;
     }
 
-    stop() {
-        this.isRunning = false;
+    toggleChallengeMode() {
+        const wasRunning = this.isRunning;
+        this.challengeMode = !this.challengeMode;
+        const info = document.getElementById('challenge-info');
+        const p_label = document.getElementById('player-label');
+
+        if (this.challengeMode) {
+            info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>Standard AI vs Conscious AI</div>`;
+            p_label.textContent = "Standard AI:";
+            this.challengeStats.totalGames++;
+        } else {
+            info.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
+            p_label.textContent = "Human Score:";
+        }
+
+        this.reset();
+        if (wasRunning) {
+            this.isRunning = true;
+            this.gameStartTime = Date.now();
+        }
+        return this.challengeMode;
     }
 
-    updateScoreDisplay() {
-        document.getElementById('player-score').textContent = this.score.player;
-        document.getElementById('ai-score').textContent = this.score.ai;
-    }
-    
-    // REPLACE THE toggleChallengeMode FUNCTION IN THE PongGame CLASS WITH THIS FINAL VERSION
-
-toggleChallengeMode() {
-    // 1. Remember if the game is currently running.
-    const wasRunning = this.isRunning;
-
-    this.challengeMode = !this.challengeMode;
-    const info = document.getElementById('challenge-info');
-    const p_label = document.getElementById('player-label');
-    
-    if (this.challengeMode) {
-        info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>Standard AI vs Conscious AI</div>`;
-        p_label.textContent = "Standard AI:";
-        this.challengeStats.totalGames++;
-    } else {
-        info.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
-        p_label.textContent = "Human Score:";
-    }
-    
-    // 2. Call reset(). This will reset positions AND set gameStartTime to 0.
-    this.reset();
-
-    // 3. Restore the running state to what it was before the reset.
-    this.isRunning = wasRunning;
-
-    // 4. THE FIX: If the game was running, we must also reset the start timer to now.
-    if (this.isRunning) {
-        this.gameStartTime = Date.now();
+    // --- AI CONTROL METHOD ---
+    setAIAction(action, speed) {
+        const moveSpeed = speed || this.ai.speed;
+        if (action === 'UP') this.ai.y -= moveSpeed;
+        if (action === 'DOWN') this.ai.y += moveSpeed;
+        this.ai.y = Math.max(0, Math.min(this.height - this.ai.height, this.ai.y));
     }
 
-    return this.challengeMode;
-}
     handleChallengeScoring(winner) {
         if (winner === 'ai') this.challengeStats.consciousWins++;
         else this.challengeStats.standardWins++;
-        
         const stats = this.standardAI.getStats();
         document.getElementById('challenge-info').innerHTML = `
             <div style="color: #ff6b6b; font-weight: bold;">🏆 CHALLENGE MODE</div>
@@ -3327,8 +3626,13 @@ toggleChallengeMode() {
             </div>
         `;
     }
+
+    updateScoreDisplay() {
+        document.getElementById('player-score').textContent = this.score.player;
+        document.getElementById('ai-score').textContent = this.score.ai;
+    }
 }
-        console.log('✅ Pong game loaded');
+console.log('✅ Pong game loaded');
 
         // ===== 3D VISUALIZATION =====
 
@@ -3651,17 +3955,29 @@ class NeuralNetworkVisualizer {
     }
 }
 
-        class UltimateConsciousnessSystem {
+        // =======================================================================
+// === FINAL REPLACEMENT for UltimateConsciousnessSystem ===
+// Integrates the decoupled "brain" (slow loop) and "body" (fast loop)
+// into your updated class structure for maximum performance.
+// =======================================================================
+
+class UltimateConsciousnessSystem {
     constructor() {
         this.isRunning = false;
-        this.step = 0;
+        this.step = 0; // Cognitive steps
         this.nnVisualizer = null;
         this.lastGameState = null;
-        this.lastAction = 'IDLE';
-        this.lastResult = null; // <-- ADD THIS LINE
+        this.lastResult = null;
         this.chatInitialized = false;
         this.narrationEnabled = true;
         this.performanceStats = { totalTime: 0, calls: 0, maxTime: 0 };
+        this.narrationHistory = [];
+
+        // --- State variables for communication between loops ---
+        this.nextAIAction = 'IDLE';     // The brain writes here, the body reads from here
+        this.aiIntervalId = null;       // To store the ID of the brain loop
+        this.lastFrameReward = 0;       // The body writes the reward, the brain reads it
+
         this.initializeSystem();
         this.setupEventListeners();
     }
@@ -3671,252 +3987,123 @@ class NeuralNetworkVisualizer {
         const initialGraph = this.createConsciousnessGraph();
         this.player = new UltimateSCANPlayer(initialGraph);
         this.consciousLM = new ConsciousLanguageModel();
+
         const gameCanvas = document.getElementById('gameCanvas');
-        if (gameCanvas) {
-            this.pongGame = new PongGame(gameCanvas, this.consciousLM);
-        }
+        if (gameCanvas) this.pongGame = new PongGame(gameCanvas);
+
         const vizContainer = document.getElementById('visualization-container');
         if (vizContainer) {
             this.visualizer = new ConsciousnessVisualizer(vizContainer);
             this.visualizer.createOrUpdateGraph(initialGraph, 0.5);
-            if (this.player && this.player.worldModel) {
-           this.nnVisualizer = new NeuralNetworkVisualizer('nn-visualization-container', this.player.worldModel);
-            }
+            if (this.player && this.player.worldModel)
+                this.nnVisualizer = new NeuralNetworkVisualizer('nn-visualization-container', this.player.worldModel);
         }
+
         this.startNarrationSystem();
         console.log('✅ System initialized with language integration');
         this.updateStatus('Offline');
     }
-    // ADD this new function to the UltimateConsciousnessSystem class
-
-updateProofHarnessDisplay(breakdown, gammaSynchrony, sysStability) {
-    const proofContainer = document.getElementById('proof-metrics');
-    if (!proofContainer) return;
-    
-    // This is a more accurate Binding Quality calculation
-    const bindingQuality = dot(this.player.graph.q.flat(), this.player.graph.X.flat()) / this.player.graph.V;
-
-    const metrics = [
-        { name: 'Binding Quality', value: bindingQuality, threshold: 0.01 },
-        { name: 'Gamma Synchrony', value: gammaSynchrony, threshold: 1.0 },
-        { name: 'Sys Stability', value: sysStability, threshold: 0.5 }
-    ];
-    
-    proofContainer.innerHTML = ''; // Clear previous metrics
-    metrics.forEach(metric => {
-        const value = metric.value || 0;
-        const div = document.createElement('div');
-        div.className = `proof-metric ${value > metric.threshold ? 'proof-pass' : 'proof-fail'}`;
-        div.textContent = `${metric.name}: ${value.toFixed(4)} ${value > metric.threshold ? '✓' : '✗'}`;
-        proofContainer.appendChild(div);
-    });
-}
-
-    // CORRECTED AND OPTIMIZED FUNCTION
-
-// REPLACE THE ENTIRE createConsciousnessGraph FUNCTION WITH THIS FINAL, HARDENED VERSION
-
-createConsciousnessGraph() {
-    const n = 20;
-    const W = Array(n).fill().map(() => new Float32Array(n).fill(0));
-    const edges = [];
-    const connectionThreshold = 0.1;
-
-    for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-            if (i === j) continue;
-            const distance = Math.abs(i - j);
-            const localWeight = Math.exp(-distance / 3) * Math.random();
-            const globalWeight = Math.random() < 0.05 ? Math.random() * 0.5 : 0;
-            const totalWeight = localWeight + globalWeight;
-            if (totalWeight > connectionThreshold) {
-                W[i][j] = totalWeight;
-                edges.push([i, j]);
-            }
-        }
-    }
-    
-    // *** DEFINITIVE FIX 1: PREVENT DEAD NEURONS ***
-    // This loop guarantees that every neuron has at least one outgoing connection,
-    // preventing its "degree" from ever being zero, which fixes the 'S' calculation.
-    for (let i = 0; i < n; i++) {
-        let sum = W[i].reduce((s, v) => s + v, 0);
-        if (sum < eps) {
-            // This neuron is "dead". Give it a weak, random connection to prevent division by zero.
-            let randomTarget = Math.floor(Math.random() * n);
-            while (randomTarget === i) {
-                randomTarget = Math.floor(Math.random() * n);
-            }
-            W[i][randomTarget] = 0.1; // Assign a small, non-zero weight.
-            sum = 0.1;
-        }
-        // Normalize the row
-        for (let j = 0; j < n; j++) {
-            W[i][j] /= sum;
-        }
-    }
-
-    const q = Array(n).fill().map(() => {
-        let v;
-        // *** DEFINITIVE FIX 2: PREVENT NULL QUALIA ***
-        // This loop guarantees that no qualia vector has a zero norm,
-        // preventing division by zero in cliffordProject, which fixes the 'gammaPower' calculation.
-        do {
-            v = new Float32Array(8).map(() => Math.random() - 0.5);
-        } while (norm2(v) < eps); // Re-roll if the vector is null
-        return cliffordProject(v);
-    });
-    
-    const X = Array(n).fill().map(() => new Float32Array(4).map(() => Math.random() - 0.5));
-    
-    const graph = {
-        V: n,
-        W: W,
-        X: X,
-        q: q,
-        edges: edges,
-        stalkDims: new Array(n).fill(4),
-        a: new Float32Array(n).fill(1 / n),
-        aSchema: new Float32Array(n).fill(1 / n),
-        aMeasured: new Float32Array(n).fill(1 / n)
-    };
-    return graph;
-}
-
-    setupEventListeners() {
-        const startStopBtn = document.getElementById('startStopBtn');
-        if (startStopBtn) startStopBtn.addEventListener('click', () => this.toggleConsciousness());
-
-        const resetBtn = document.getElementById('resetBtn');
-        if (resetBtn) resetBtn.addEventListener('click', () => this.resetSystem());
-
-        const imaginationBtn = document.getElementById('imaginationBtn');
-        if (imaginationBtn) imaginationBtn.addEventListener('click', () => this.toggleImagination());
-
-        const trainGrammarBtn = document.getElementById('trainGrammarBtn');
-        if (trainGrammarBtn) trainGrammarBtn.addEventListener('click', () => this.trainGameGrammar());
-
-        const toggleNarrationBtn = document.getElementById('toggleNarrationBtn');
-        if (toggleNarrationBtn) toggleNarrationBtn.addEventListener('click', () => this.toggleNarration());
-
-        const testImportsBtn = document.getElementById('testImports');
-        if (testImportsBtn) testImportsBtn.addEventListener('click', () => this.testSystem());
-
-        const challengeModeBtn = document.getElementById('challengeModeBtn');
-        if (challengeModeBtn) {
-            challengeModeBtn.addEventListener('click', () => {
-                if (this.pongGame) {
-                    const isChallenge = this.pongGame.toggleChallengeMode();
-                    const playerLabel = document.getElementById('player-label');
-                    if (playerLabel) playerLabel.textContent = isChallenge ? 'Standard AI:' : 'Human Score:';
-                }
-            });
-        }
-
-        window.addEventListener('resize', () => {
-            if (this.visualizer) this.visualizer.resize();
-            this.adjustNarrationPanelHeight();
-        });
-    }
 
     toggleConsciousness() {
-        if (!this.isRunning) {
-            this.isRunning = true;
-            document.getElementById('startStopBtn').textContent = '⏸️ Pause Consciousness';
+        this.isRunning = !this.isRunning;
+        const btn = document.getElementById('startStopBtn');
+
+        if (this.isRunning) {
+            if (btn) btn.textContent = '⏸️ Pause Consciousness';
             this.updateStatus('Running');
             if (this.pongGame) this.pongGame.start();
             if (this.visualizer) this.visualizer.startAnimation();
+            
+            // Start the brain loop (slow, expensive decisions)
+            this.aiIntervalId = setInterval(() => this.aiCognitiveLoop(), 100);
+            // Start the body loop (fast physics & rendering)
             this.gameLoop();
         } else {
-            this.isRunning = false;
-            document.getElementById('startStopBtn').textContent = '🚀 Awaken Consciousness';
+            if (btn) btn.textContent = '🚀 Awaken Consciousness';
             this.updateStatus('Paused');
             if (this.pongGame) this.pongGame.stop();
             if (this.visualizer) this.visualizer.stopAnimation();
+            
+            clearInterval(this.aiIntervalId);
+            this.aiIntervalId = null;
         }
     }
 
-    // FIXED AND CORRECTED gameLoop function
+    async aiCognitiveLoop() {
+        if (!this.isRunning) return;
 
-// REPLACE the entire gameLoop function in the UltimateConsciousnessSystem class
+        try {
+            const gameState = { 
+                ball: { ...this.pongGame.ball }, 
+                ai: { ...this.pongGame.ai }, 
+                player: { ...this.pongGame.player } 
+            };
 
-async gameLoop() {
-    if (!this.isRunning) return;
+            // 1. THINK
+            const result = await stepTick(this.player, gameState, this.step);
 
-    // Master error handler to prevent the loop from ever breaking
-    try {
-        // --- 1. CAPTURE STATE & THINK ---
-        const gameState = { ball: { ...this.pongGame.ball }, ai: { ...this.pongGame.ai }, player: { ...this.pongGame.player } };
-        const result = await stepTick(this.player, gameState, this.step);
-         if (this.step % 60 === 0 && result.activations) { // Log every 60 frames
-                console.log(`--- [STEP ${this.step}] AI ACTIVATIONS ---`);
-                console.log("Input:", result.activations.input.slice(0, 5));
-                console.log("LSTM:", result.activations.lstm.slice(0, 5));
-                console.log("Hidden2:", result.activations.hidden2.slice(0, 5));
-                console.log("Output:", result.activations.output.slice(0, 5));
-                console.log("------------------------------------");
+            // Ignore non-finite action values
+            if (!['UP','DOWN','IDLE'].includes(result.action)) result.action = 'IDLE';
+
+            this.nextAIAction = result.action || 'IDLE';
+            this.lastResult = result;
+
+            // 2. LEARN
+            const reward = this.lastFrameReward;
+            if (reward !== 0 && this.lastGameState && this.lastResult) {
+                const lastStateVec = this.player.gameStateToVec(this.lastGameState);
+                const nextStateVec = this.player.gameStateToVec(gameState);
+                const lastActionVec = (this.lastResult.action === 'UP') ? [1,0,0] : (this.lastResult.action === 'DOWN') ? [0,1,0] : [0,0,1];
+                const qualiaStateQ = this.player.getAggregateQualia(this.lastResult.graph);
+                const nextQualiaStateQ = this.player.getAggregateQualia(result.graph);
+                
+                this.player.worldModel.storeTransition(lastStateVec, lastActionVec, nextStateVec, reward, qualiaStateQ, nextQualiaStateQ);
+                this.player.worldModel.trainFromMemory();
             }
-        const action = result.action || 'IDLE';
 
-        // --- 2. ACT & UPDATE PHYSICS ---
-        this.pongGame.setAIAction(result.action, result.dynamicSpeed);
-        const reward = this.pongGame.update();
+            // 3. NARRATE
+            if (!this.lastNarrationTime || Date.now() - this.lastNarrationTime > 2000) {
+                const sentenceResult = await this.consciousLM.generateActionSentence(result.action, result.consciousness, gameState);
+                this.addNarration(sentenceResult.sentence, result.consciousness);
+                this.lastNarrationTime = Date.now();
+            }
 
-        // --- 3. LEARN ---
-        if (reward !== 0 && this.lastGameState && this.lastResult) {
-            const lastStateVec = this.player.gameStateToVec(this.lastGameState);
-            const nextStateVec = this.player.gameStateToVec(gameState);
-            const lastActionVec = this.lastAction === 'UP' ? [1, 0, 0] : this.lastAction === 'DOWN' ? [0, 1, 0] : [0, 0, 1];
-            
-            const qualiaStateQ = this.player.getAggregateQualia(this.lastResult.graph);
-            const nextQualiaStateQ = this.player.getAggregateQualia(result.graph);
-            
-            this.player.worldModel.storeTransition(lastStateVec, lastActionVec, nextStateVec, reward, qualiaStateQ, nextQualiaStateQ);
-            this.player.worldModel.trainFromMemory();
+            this.lastGameState = gameState;
+            this.step++;
+        } catch (error) {
+            console.error("CRITICAL ERROR IN AI COGNITIVE LOOP:", error);
+            this.toggleConsciousness();
+            alert("The AI suffered a critical cognitive failure. Check console.");
         }
+    }
 
-        // --- 4. VISUALIZE & UPDATE ALL UI ---
-        this.pongGame.render(result.consciousness);
-        this.visualizer.createOrUpdateGraph(result.graph, result.consciousness);
-        if (result.activations) this.nnVisualizer.update(result.activations);
-        
-        // This single call now handles ALL UI updates, including the proof harness and imagination paths.
-        // The erroneous call to updateProofMetrics has been removed.
-        this.updateUIDisplays(result); 
+    gameLoop() {
+        if (!this.isRunning) return;
 
-        // --- 5. NARRATE ---
-        if (Date.now() - (this.lastNarrationTime || 0) > 2000) {
-            const sentenceResult = await this.consciousLM.generateActionSentence(action, result.consciousness, gameState);
-            this.addNarration(sentenceResult.sentence, result.consciousness);
-            this.lastNarrationTime = Date.now();
+        // 1. ACT
+        this.pongGame.setAIAction(this.nextAIAction, this.lastResult ? this.lastResult.dynamicSpeed : null);
+
+        // 2. UPDATE PHYSICS & GET REWARD
+        this.lastFrameReward = this.pongGame.update();
+
+        // 3. RENDER
+        if (this.lastResult) {
+            this.pongGame.render(this.lastResult.consciousness);
+            this.visualizer.createOrUpdateGraph(this.lastResult.graph, this.lastResult.consciousness);
+            if (this.lastResult.activations) this.nnVisualizer.update(this.lastResult.activations);
+            this.updateUIDisplays(this.lastResult);
+        } else {
+            this.pongGame.render(0.5);
         }
-        
-        // --- 6. SAVE STATE & REPEAT ---
-        this.lastAction = action;
-        this.lastGameState = gameState;
-        this.lastResult = result;
-        this.step++;
 
         requestAnimationFrame(() => this.gameLoop());
-
-    } catch (error) {
-        console.error("CRITICAL ERROR IN GAME LOOP:", error);
-        this.updateStatus('CRASHED');
-        alert("The AI has suffered a critical cognitive failure and has been shut down. Please check the console for details and reset the system.");
-        this.isRunning = false; // Stop the loop
-    }
-}
-
-    resetSystem() {
-        this.isRunning = false;
-        this.step = 0;
-        this.initializeSystem();
     }
 
     startNarrationSystem() {
         this.addNarration("🧠 Consciousness system initialized. Language generation ready.", 0.5);
         this.addNarration("🎮 Game AI will narrate its thoughts and actions in real-time.", 0.5);
         window.addEventListener('resize', () => this.adjustNarrationPanelHeight());
+        this.adjustNarrationPanelHeight();
     }
 
     adjustNarrationPanelHeight() {
@@ -3924,314 +4111,163 @@ async gameLoop() {
         const leftPanel = document.querySelector('.consciousness-panel');
         const rightPanel = document.querySelector('.game-container');
         if (!narrationPanel || !leftPanel || !rightPanel) return;
-        const leftPanelHeight = leftPanel.offsetHeight;
-        const rightPanelHeight = rightPanel.offsetHeight;
-        const maxSidePanelHeight = Math.min(leftPanelHeight, rightPanelHeight);
-        const headerHeight = 60;
-        const metricsHeight = 80;
-        const padding = 40;
-        const availableHeight = Math.max(200, maxSidePanelHeight - headerHeight - metricsHeight - padding);
-        const maxHeight = Math.min(400, availableHeight);
+
+        const leftHeight = leftPanel.offsetHeight;
+        const rightHeight = rightPanel.offsetHeight;
+        const maxSideHeight = Math.min(leftHeight, rightHeight);
+        const header = 60, metrics = 80, padding = 40;
+        const maxHeight = Math.min(400, Math.max(200, maxSideHeight - header - metrics - padding));
         narrationPanel.style.maxHeight = `${maxHeight}px`;
-        const narrationMessages = document.getElementById('ai-narration');
-        if (narrationMessages) {
-            const messagesHeight = Math.max(150, maxHeight - headerHeight - metricsHeight);
-            narrationMessages.style.height = `${messagesHeight}px`;
-            narrationMessages.style.maxHeight = `${messagesHeight}px`;
+
+        const messages = document.getElementById('ai-narration');
+        if (messages) {
+            const msgHeight = Math.max(150, maxHeight - header - metrics);
+            messages.style.height = `${msgHeight}px`;
+            messages.style.maxHeight = `${msgHeight}px`;
         }
-        console.log(`📐 Narration panel adjusted: ${maxHeight}px (based on side panels: ${leftPanelHeight}px, ${rightPanelHeight}px)`);
     }
 
-// REPLACE the entire updateUIDisplays function in the UltimateConsciousnessSystem class
+    createConsciousnessGraph() {
+        const n = 20, eps = 1e-6;
+        const W = Array(n).fill().map(() => new Float32Array(n).fill(0));
+        const edges = [];
 
-updateUIDisplays(result) {
-    if (!result || !result.graph) return;
-
-    // --- 1. THE DEFINITIVE BINDING QUALITY CALCULATION ---
-    let total_binding = 0;
-    // We must compare the sensory components of 'q' with the sensory data in 'X', neuron by neuron.
-    for (let i = 0; i < this.player.graph.V; i++) {
-        // Extract the parts of the thought vector that correspond to senses (e1, e2, e3)
-        const q_sensory_part = [this.player.graph.q[i][1], this.player.graph.q[i][2], this.player.graph.q[i][3]];
-        // Extract the corresponding sensory data
-        const x_sensory_part = [this.player.graph.X[i][0], this.player.graph.X[i][1], this.player.graph.X[i][2]];
-        // The dot product of these two small vectors tells us how aligned this neuron's thought is with reality.
-        total_binding += dot(q_sensory_part, x_sensory_part);
-    }
-    const bindingQuality = total_binding / this.player.graph.V; // Average across all neurons.
-
-    // --- 2. Calculate all other metrics ---
-    const consciousness = result.consciousness || 0;
-    const coherenceError = result.coherenceError || 0;
-    const syntrices = result.graph.syntrices || [];
-    const gammaSynchrony = syntrices.reduce((s, c) => s + (c.persistence || 0), 0);
-    const sysStability = result.selfStability || 0;
-
-    // --- 3. Update the main status panel ---
-    Object.entries({
-        step: this.step,
-        consciousness: consciousness.toFixed(3),
-        'coherence-error': coherenceError.toFixed(3),
-        loops: syntrices.length,
-        action: this.lastAction,
-        'self-awareness': sysStability.toFixed(3)
-    }).forEach(([id, value]) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = value;
-    });
-    
-    // --- 4. Update the Full Proof Harness display ---
-    const proofContainer = document.getElementById('proof-metrics');
-    if (proofContainer) {
-        proofContainer.innerHTML = '';
-        const proofReport = result.proofReport || {};
-        const allMetrics = [
-            { name: 'Binding Quality', value: bindingQuality, threshold: 0.01, isPercent: false },
-            { name: 'Gamma Synchrony', value: gammaSynchrony, threshold: 0.1, isPercent: false },
-            { name: 'Sys Stability', value: sysStability, threshold: 0.2, isPercent: false },
-            { name: 'Clifford Dagger', value: proofReport.dagger || 0, threshold: 0.8, isPercent: true },
-            { name: 'PSD Matrix', value: proofReport.psd || 0, threshold: 0.8, isPercent: true },
-            { name: 'Idempotence', value: proofReport.idemp || 0, threshold: 0.8, isPercent: true },
-            { name: 'Coalgebra', value: proofReport.coalg || 0, threshold: 0.8, isPercent: true }
-        ];
-        allMetrics.forEach(metric => {
-            const div = document.createElement('div');
-            const displayValue = metric.isPercent ? `${(metric.value * 100).toFixed(0)}%` : metric.value.toFixed(4);
-            const pass = metric.value > metric.threshold;
-            div.className = `proof-metric ${pass ? 'proof-pass' : 'proof-fail'}`;
-            div.textContent = `${metric.name}: ${displayValue} ${pass ? '✓' : '✗'}`;
-            proofContainer.appendChild(div);
-        });
-    }
-
-    // --- 5. Consolidated Logging ---
-    if (this.step % 60 === 0) {
-        console.log("AI Cognitive State:", {
-            step: this.step, coherenceError: coherenceError.toFixed(4), bindingQuality: bindingQuality.toFixed(4),
-            gammaSynchrony: gammaSynchrony.toFixed(4), sysStability: sysStability.toFixed(4), syntricesCount: syntrices.length
-        });
-    }
-}
-  
-    resetSystem() {
-        this.isRunning = false;
-        this.step = 0;
-        document.getElementById('startStopBtn').textContent = '🚀 Awaken Consciousness';
-        this.updateStatus('Reset');
-        this.initializeSystem();
-        if (this.pongGame) {
-            this.pongGame.reset();
-            this.pongGame.stop();
-        }
-        if (this.visualizer) {
-            this.visualizer.stopAnimation();
-        }
-        console.log('🔄 System reset');
-    }
-
-    toggleImagination() {
-        console.log('🔮 Imagination mode toggled');
-    }
-
-    trainGameGrammar() {
-        const btn = document.getElementById('trainGrammarBtn');
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = 'Training...';
-        }
-        console.log('📝 Training game grammar on current data...');
-        if (this.consciousLM && this.consciousLM.trainingData.length > 0) {
-            const trainingData = this.consciousLM.trainingData;
-            let totalLoss = 0;
-            let successfulParses = 0;
-            for (const entry of trainingData) {
-                const loss = Math.random() * 0.5 + 0.1;
-                totalLoss += loss;
-                if (entry.consciousness > 0.6) successfulParses++;
+        for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) {
+                if (i === j) continue;
+                const distance = Math.abs(i - j);
+                const localWeight = Math.exp(-distance / 3) * Math.random();
+                const globalWeight = Math.random() < 0.05 ? Math.random() * 0.5 : 0;
+                const totalWeight = localWeight + globalWeight;
+                if (totalWeight > 0.1) { W[i][j] = totalWeight; edges.push([i, j]); }
             }
-            const avgLoss = totalLoss / trainingData.length;
-            const successRate = (successfulParses / trainingData.length) * 100;
-            this.updateLanguageMetrics(
-                this.consciousLM.selfModel.currentConsciousness,
-                avgLoss,
-                'Trained',
-                successRate
-            );
-            console.log(`✅ Grammar training complete. Loss: ${avgLoss.toFixed(3)}, Success: ${successRate.toFixed(1)}%`);
-            this.addNarration(`🎓 Grammar training completed. I learned from ${trainingData.length} sentences with ${successRate.toFixed(1)}% success rate.`, this.consciousLM.selfModel.currentConsciousness);
-        } else {
-            console.log('⚠️ No training data available yet');
-            this.addNarration("⚠️ No training data collected yet. Play the game to generate sentences for training.", 0.5);
         }
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = '📝 Train Game Grammar';
+
+        for (let i = 0; i < n; i++) {
+            let sum = W[i].reduce((a, b) => a + b, 0);
+            if (sum < eps) { let t = Math.floor(Math.random() * n); while(t===i) t=Math.floor(Math.random()*n); W[i][t]=0.1; sum=0.1; }
+            for (let j = 0; j < n; j++) W[i][j] /= sum;
         }
+
+        const q = Array(n).fill().map(() => { let v; do { v = new Float32Array(8).map(()=>Math.random()-0.5); } while (norm2(v)<eps); return cliffordProject(v); });
+        const X = Array(n).fill().map(() => new Float32Array(4).map(() => Math.random()-0.5));
+
+        return { V: n, W, X, q, edges, stalkDims: new Array(n).fill(4),
+                 a: new Float32Array(n).fill(1/n),
+                 aSchema: new Float32Array(n).fill(1/n),
+                 aMeasured: new Float32Array(n).fill(1/n) };
     }
 
-    toggleNarration() {
-        this.narrationEnabled = !this.narrationEnabled;
-        const btn = document.getElementById('toggleNarrationBtn');
-        if (btn) {
-            btn.textContent = this.narrationEnabled ? '🔇 Disable Narration' : '🗣️ Enable Narration';
-        }
-        const status = this.narrationEnabled ? 'Active' : 'Disabled';
-        this.updateLanguageMetrics(
-            this.consciousLM ? this.consciousLM.selfModel.currentConsciousness : 0.5,
-            null,
-            status
-        );
-        this.addNarration(
-            `🗣️ Narration ${this.narrationEnabled ? 'enabled' : 'disabled'}. ${this.narrationEnabled ? 'I will continue describing my thoughts.' : 'I will remain silent.'}`,
-            this.consciousLM ? this.consciousLM.selfModel.currentConsciousness : 0.5
-        );
-        console.log(`🗣️ Narration ${this.narrationEnabled ? 'enabled' : 'disabled'}`);
+    setupEventListeners() {
+        const bind = (id, fn) => { const el = document.getElementById(id); if(el) el.addEventListener('click', fn); };
+        bind('startStopBtn', () => this.toggleConsciousness());
+        bind('resetBtn', () => this.resetSystem());
+        bind('imaginationBtn', () => this.toggleImagination());
+        bind('trainGrammarBtn', () => this.trainGameGrammar());
+        bind('toggleNarrationBtn', () => this.toggleNarration());
+        bind('testImports', () => this.testSystem());
+        bind('challengeModeBtn', () => { if(this.pongGame){this.pongGame.toggleChallengeMode();} });
+        window.addEventListener('resize', () => { if(this.visualizer) this.visualizer.resize(); this.adjustNarrationPanelHeight(); });
     }
 
     addNarration(sentence, consciousness) {
-        if (!this.narrationEnabled) return;
-        const narrationContainer = document.getElementById('ai-narration');
-        if (!narrationContainer) return;
-        const timestamp = new Date().toLocaleTimeString();
-        const messageElement = document.createElement('div');
-        messageElement.style.marginBottom = '8px';
-        messageElement.style.padding = '6px';
-        messageElement.style.borderLeft = `3px solid ${this.getConsciousnessColor(consciousness)}`;
-        messageElement.style.backgroundColor = '#2a2a2a';
-        messageElement.innerHTML = `
-            <div style="color: ${this.getConsciousnessColor(consciousness)}; font-weight: bold; margin-bottom: 3px; font-size: 11px;">
-                🧠 AI (C=${consciousness.toFixed(3)}) <span style="color: #888; font-weight: normal;">${timestamp}</span>
-            </div>
-            <div style="color: #fff; line-height: 1.3; font-size: 13px;">${sentence}</div>
-        `;
-        narrationContainer.appendChild(messageElement);
-        narrationContainer.scrollTop = narrationContainer.scrollHeight;
-        if (this.consciousLM) {
-            const sentenceEl = document.getElementById('sentences-generated');
-            if (sentenceEl) sentenceEl.textContent = this.consciousLM.sentenceCount;
+        if(!this.narrationEnabled) return;
+        const container = document.getElementById('ai-narration');
+        if(!container) return;
+        const msg = document.createElement('div');
+        const time = new Date().toLocaleTimeString();
+        msg.innerHTML = `<div style="color:${this.getConsciousnessColor(consciousness)}; font-weight:bold;">🧠 AI (C=${consciousness.toFixed(3)}) <span style="color:#888; font-weight:normal;">${time}</span></div>
+                         <div style="color:#fff; line-height:1.3;">${sentence}</div>`;
+        msg.style.marginBottom='8px';
+        msg.style.padding='6px';
+        msg.style.borderLeft=`3px solid ${this.getConsciousnessColor(consciousness)}`;
+        msg.style.backgroundColor='#2a2a2a';
+        container.appendChild(msg);
+        container.scrollTop = container.scrollHeight;
+        this.narrationHistory.push(sentence);
+    }
+
+    getConsciousnessColor(c){ return c>0.8?'#4CAF50':c>0.6?'#FF9800':c>0.4?'#2196F3':'#9E9E9E'; }
+
+    updateUIDisplays(result) {
+        if(!result||!result.graph) return;
+        // simplified binding quality
+        let total_binding=0;
+        for(let i=0;i<this.player.graph.V;i++){
+            const q_s=[this.player.graph.q[i][1],this.player.graph.q[i][2],this.player.graph.q[i][3]];
+            const x_s=[this.player.graph.X[i][0],this.player.graph.X[i][1],this.player.graph.X[i][2]];
+            total_binding+=dot(q_s,x_s);
         }
-    }
+        const bindingQuality=total_binding/this.player.graph.V;
+        const consciousness=result.consciousness||0;
+        const coherenceError=result.coherenceError||0;
+        const syntrices=result.graph.syntrices||[];
+        const gammaSynchrony=syntrices.reduce((s,c)=>s+(c.persistence||0),0);
+        const sysStability=result.selfStability||0;
 
-    getConsciousnessColor(consciousness) {
-        if (consciousness > 0.8) return '#4CAF50';
-        if (consciousness > 0.6) return '#FF9800';
-        if (consciousness > 0.4) return '#2196F3';
-        return '#9E9E9E';
-    }
-
-    updateLanguageMetrics(consciousness, loss = null, status = null, successRate = null) {
-        const elements = {
-            'language-consciousness': consciousness.toFixed(3),
-            'sentence-generation': status || 'Active'
-        };
-        if (loss !== null) elements['grammar-loss'] = loss.toFixed(3);
-        if (successRate !== null) elements['parse-success-rate'] = `${successRate.toFixed(1)}%`;
-        Object.entries(elements).forEach(([id, value]) => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = value;
-            if (id === 'language-consciousness') el.style.color = this.getConsciousnessColor(parseFloat(value));
+        Object.entries({step:this.step, consciousness:consciousness.toFixed(3),
+            'coherence-error':coherenceError.toFixed(3), loops:syntrices.length, action:this.lastAction,
+            'self-awareness':sysStability.toFixed(3)}).forEach(([id,value])=>{
+            const el=document.getElementById(id);
+            if(el) el.textContent=value;
         });
-        const coherenceEl = document.getElementById('grammar-coherence');
-        if (coherenceEl) {
-            const coherence = consciousness * 0.8 + Math.random() * 0.2;
-            coherenceEl.textContent = coherence.toFixed(3);
-            coherenceEl.style.color = this.getConsciousnessColor(coherence);
+
+        const proofContainer = document.getElementById('proof-metrics');
+        if(proofContainer){
+            proofContainer.innerHTML='';
+            const report=result.proofReport||{};
+            const metrics=[
+                {name:'Binding Quality',value:bindingQuality,threshold:0.01},
+                {name:'Gamma Synchrony',value:gammaSynchrony,threshold:0.1},
+                {name:'Sys Stability',value:sysStability,threshold:0.2},
+                {name:'Clifford Dagger',value:report.dagger||0,threshold:0.8},
+                {name:'PSD Matrix',value:report.psd||0,threshold:0.8},
+                {name:'Idempotence',value:report.idemp||0,threshold:0.8},
+                {name:'Coalgebra',value:report.coalg||0,threshold:0.8}
+            ];
+            metrics.forEach(m=>{
+                const div=document.createElement('div');
+                const val = m.value*100>1?`${(m.value*100).toFixed(0)}%`:m.value.toFixed(4);
+                const pass = m.value>m.threshold;
+                div.className=`proof-metric ${pass?'proof-pass':'proof-fail'}`;
+                div.textContent=`${m.name}: ${val} ${pass?'✓':'✗'}`;
+                proofContainer.appendChild(div);
+            });
         }
     }
 
-    updateImaginationDisplay(imaginationPaths) {
-        const pathsContainer = document.getElementById('imagination-paths');
-        if (!pathsContainer) return;
-        pathsContainer.innerHTML = '';
-        imaginationPaths.slice(0, 3).forEach((pathData, i) => {
-            const div = document.createElement('div');
-            div.className = `imagination-path path-${pathData.value > 0 ? 'good' : 'bad'}`;
-            div.textContent = `${pathData.actionName}: Value=${pathData.value.toFixed(2)} (${pathData.path.length} steps)`;
-            pathsContainer.appendChild(div);
-        });
+    resetSystem() {
+        this.isRunning=false;
+        clearInterval(this.aiIntervalId);
+        this.aiIntervalId=null;
+        this.step=0;
+        this.nextAIAction='IDLE';
+        this.lastResult=null;
+        document.getElementById('startStopBtn').textContent='🚀 Awaken Consciousness';
+        this.updateStatus('Reset');
+        this.initializeSystem();
+        if(this.pongGame){this.pongGame.reset();this.pongGame.stop();}
+        if(this.visualizer){this.visualizer.stopAnimation();}
+        console.log('🔄 System reset');
     }
 
-    updateGrammarStatus(status, success, loss, stability) {
-        const elements = {
-            'grammar-status': status,
-            'parse-success': success,
-            'training-loss': loss,
-            'sheaf-stability': stability
-        };
-        Object.entries(elements).forEach(([id, value]) => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = value;
-        });
-    }
-
-    testSystem() {
-        console.log('🔧 Testing system components...');
-        try {
-            const testResult = calculateFreeEnergy(this.player.graph, 0.1, this.player.getParams({ coherenceError: 0.1, syntrices: [], sheafDiff: 0 }));
-            console.log('✅ Consciousness computation test:', testResult.C.toFixed(3));
-            const testQualia = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
-            const testResult2 = cliffordMultiplyVec(CLIFF, testQualia, testQualia);
-            console.log('✅ Clifford algebra test test:', testResult2);
-            const testGrammar = new GrammarModel(['S', 'NP'], [['S', ['NP']]]);
-            console.log('✅ Grammar model test:', testGrammar.productions.length, 'productions');
-            if (this.player.syncolator) {
-                const cycles = this.player.syncolator.detect(this.player.graph.W, this.player.graph.q);
-                console.log('✅ Syncolator test:', cycles.length, 'cycles detected');
-            }
-            if (this.player.proofHarness) {
-                this.player.proofHarness.checkDagger(this.player.graph.q);
-                const report = this.player.proofHarness.report();
-                console.log('✅ Proof harness test:', Object.keys(report).length, 'metrics');
-            }
-            if (this.player.worldModel) {
-                const testState = [0.5, 0.5, 0, 0, 0.5, 0.1];
-                const testAction = [1, 0, 0];
-                const testQ = new Array(8).fill(0.1);
-                const prediction = this.player.worldModel.predict(testState, testAction, testQ);
-                console.log('✅ World model test: FEP =', prediction.fep.toFixed(3));
-            }
-            if (this.consciousLM) {
-                const summary = this.consciousLM.getConversationSummary();
-                console.log('✅ Language model test:', summary.totalInteractions, 'interactions');
-            }
-            if (this.narrationEnabled) {
-                this.addNarration('🔧 System test completed successfully', 0.8);
-                console.log('✅ Narration system test: active');
-            }
-            console.log('✅ All system tests passed - Full functionality verified');
-        } catch (error) {
-            console.error('❌ System test failed:', error);
-            console.log('🔧 Some components may need initialization');
-        }
-    }
-
-    updateStatus(status) {
-        const statusEl = document.getElementById('status');
-        if (statusEl) {
-            statusEl.textContent = status;
-            statusEl.className = status === 'Running' ? 'status-running' : 'status-stopped';
-        }
-    }
+    toggleImagination(){ console.log('🔮 Imagination mode toggled'); }
+    trainGameGrammar(){ console.log('📝 Training game grammar (stub)'); }
+    toggleNarration(){ this.narrationEnabled=!this.narrationEnabled; }
+    testSystem(){ console.log('🔧 System test (stub)'); }
+    updateStatus(status){ const el=document.getElementById('status'); if(el){ el.textContent=status; el.className=status==='Running'?'status-running':'status-stopped'; } }
 
     cleanupMemory() {
-        if (this.player) {
-            if (this.player.worldModel && this.player.worldModel.memory.length > 100) {
-                this.player.worldModel.memory = this.player.worldModel.memory.slice(-50);
-            }
-            if (this.player.worldModel && this.player.worldModel.fepHistory.length > 50) {
-                this.player.worldModel.fepHistory = this.player.worldModel.fepHistory.slice(-25);
-            }
-            if (this.player.proofHarness) this.player.proofHarness.cleanupMetrics();
+        if(this.player && this.player.worldModel){
+            if(this.player.worldModel.memory.length>1000) this.player.worldModel.memory=this.player.worldModel.memory.slice(-500);
+            if(this.player.worldModel.fepHistory.length>100) this.player.worldModel.fepHistory=this.player.worldModel.fepHistory.slice(-50);
         }
-        if (this.narrationHistory && this.narrationHistory.length > 20) {
-            this.narrationHistory = this.narrationHistory.slice(-10);
-        }
-        if (window.gc) window.gc();
-        console.log(`🧹 Memory cleanup completed at step ${this.step}`);
+        if(this.narrationHistory.length>50) this.narrationHistory=this.narrationHistory.slice(-25);
+        if(window.gc) window.gc();
+        console.log(`🧹 Memory cleanup completed at cognitive step ${this.step}`);
     }
 }
-
-        // ===== INITIALIZE APPLICATION =====
+     // ===== INITIALIZE APPLICATION =====
 
         let app;
 
