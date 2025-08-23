@@ -1063,6 +1063,22 @@ class AdamOptimizer {
         }
     }
 
+    // ADD THIS METHOD INSIDE the AdamOptimizer class
+
+    // ADD THIS METHOD INSIDE the AdamOptimizer class
+
+    clone() {
+        const newOptimizer = new AdamOptimizer(1);
+        newOptimizer.lr = this.lr;
+        newOptimizer.beta1 = this.beta1;
+        newOptimizer.beta2 = this.beta2;
+        newOptimizer.epsilon = this.epsilon;
+        newOptimizer.t = this.t;
+        newOptimizer.m = JSON.parse(JSON.stringify(this.m));
+        newOptimizer.v = JSON.parse(JSON.stringify(this.v));
+        return newOptimizer;
+    }
+    
     update(param, grad) {
         this.t++;
         const isMatrix = Array.isArray(param);
@@ -1100,6 +1116,8 @@ class AdamOptimizer {
 }
 
 
+// REPLACE the entire WorldModel class with this corrected version.
+
 class WorldModel {
     constructor(stateDim = 8, actionDim = 3, qDim = 8) {
         this.stateDim = stateDim;
@@ -1120,13 +1138,11 @@ class WorldModel {
         this.transW5 = this.randomMatrix(stateDim, hidden4, 0.1);
         this.transB5 = vecZeros(stateDim);
 
-        // Reward Network (simplified for stability)
         this.rewardW1 = this.randomMatrix(64, stateDim + qDim, 0.1);
         this.rewardB1 = vecZeros(64);
         this.rewardW2 = this.randomMatrix(1, 64, 0.1);
         this.rewardB2 = [0];
 
-        // Qualia Projection
         this.qProjW = this.randomMatrix(qDim, stateDim, 0.2);
         this.qProjB = vecZeros(qDim);
 
@@ -1134,8 +1150,10 @@ class WorldModel {
         this.fepHistory = [];
 
         // Optimizers for layers we will train
-        this.adam_transW4 = new AdamOptimizer([stateDim, hidden3]);
-        this.adam_transB4 = new AdamOptimizer(stateDim);
+        this.adam_transW5 = new AdamOptimizer([stateDim, hidden4]); // <-- NEW
+        this.adam_transB5 = new AdamOptimizer(stateDim);           // <-- NEW
+        this.adam_transW4 = new AdamOptimizer([hidden4, hidden3]); // Corrected shape
+        this.adam_transB4 = new AdamOptimizer(hidden4);           // Corrected shape
         this.adam_transW3 = new AdamOptimizer([hidden3, hidden2]);
         this.adam_transB3 = new AdamOptimizer(hidden3);
         this.adam_rewardW1 = new AdamOptimizer([64, stateDim + qDim]);
@@ -1143,8 +1161,31 @@ class WorldModel {
         this.adam_rewardW2 = new AdamOptimizer([1, 64]);
         this.adam_rewardB2 = new AdamOptimizer(1);
     }
+    
+    // ADD THIS METHOD (it will be used by the clone fix in Step 2)
+    clone() {
+        const newModel = new WorldModel();
+        const dataProperties = [
+            'transW1', 'transB1', 'transW2', 'transB2', 'transW3', 'transB3', 'transW4', 'transB4',
+            'transW5', 'transB5', 'rewardW1', 'rewardB1', 'rewardW2', 'rewardB2', 'qProjW', 'qProjB',
+            'memory', 'fepHistory'
+        ];
+        for (const key of dataProperties) {
+            if (this[key]) newModel[key] = JSON.parse(JSON.stringify(this[key]));
+        }
+        newModel.adam_transW5 = this.adam_transW5.clone();
+        newModel.adam_transB5 = this.adam_transB5.clone();
+        newModel.adam_transW4 = this.adam_transW4.clone();
+        newModel.adam_transB4 = this.adam_transB4.clone();
+        newModel.adam_transW3 = this.adam_transW3.clone();
+        newModel.adam_transB3 = this.adam_transB3.clone();
+        newModel.adam_rewardW1 = this.adam_rewardW1.clone();
+        newModel.adam_rewardB1 = this.adam_rewardB1.clone();
+        newModel.adam_rewardW2 = this.adam_rewardW2.clone();
+        newModel.adam_rewardB2 = this.adam_rewardB2.clone();
+        return newModel;
+    }
 
-    // --- Helper Methods ---
     randomMatrix(rows, cols, scale = 0.1) {
         const M = new Array(rows);
         for (let i = 0; i < rows; i++) M[i] = new Array(cols).fill(0).map(() => (Math.random() * 2 - 1) * scale);
@@ -1158,7 +1199,6 @@ class WorldModel {
         if (this.memory.length > 2000) this.memory.shift(); 
     }
 
-    // --- Core Logic ---
     predict(state, action, q) {
         const activations = {};
         if (state.some(isNaN) || action.some(isNaN) || q.some(isNaN)) {
@@ -1168,19 +1208,21 @@ class WorldModel {
         const input = state.concat(action).concat(q);
         activations.input = state; 
 
-        // Forward pass through transition network
+        // CORRECTED FORWARD PASS (5 layers)
         const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
         const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
-        activations.hidden2 = h2_trans; 
         const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
-        let nextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
-        activations.output = nextState;
+        const h4_trans = tanhVec(addVec(matVecMul(this.transW4, h3_trans), this.transB4));
+        let nextState = addVec(matVecMul(this.transW5, h4_trans), this.transB5);
+        
+        // Update activations for visualizer
         activations.lstm = h1_trans; 
+        activations.hidden2 = h3_trans;
+        activations.output = nextState;
 
         nextState = nextState.map((val) => clamp(isFinite(val) ? val : 0, -2.0, 2.0));
         const nextQ = this.qProj(nextState);
 
-        // Forward pass through reward network
         const h1_reward = tanhVec(addVec(matVecMul(this.rewardW1, nextState.concat(nextQ)), this.rewardB1));
         const reward = matVecMul(this.rewardW2, h1_reward)[0] + this.rewardB2[0];
 
@@ -1188,80 +1230,67 @@ class WorldModel {
         return { nextState: new Float32Array(nextState), nextQ, reward, fep, activations };
     }
 
-    // --- Train from Memory ---
     trainFromMemory(batchSize = 16) {
         if (this.memory.length < batchSize) return;
         const gradClip = 1.0;
         const lambda_reward_into_state = 0.01;
+        const hidden4 = 64; // needed for dimensions
 
         for (let k = 0; k < Math.min(batchSize, this.memory.length); k++) {
             const tr = this.memory[Math.floor(Math.random() * this.memory.length)];
             if (!tr) continue;
             if (![tr.s, tr.a, tr.Q, tr.nextS].every(arr => Array.isArray(arr) && arr.every(isFinite))) continue;
 
-            // --- Forward Transition ---
+            // CORRECTED FORWARD PASS (5 layers)
             const input = tr.s.concat(tr.a).concat(tr.Q);
             const h1_trans = tanhVec(addVec(matVecMul(this.transW1, input), this.transB1));
             const h2_trans = tanhVec(addVec(matVecMul(this.transW2, h1_trans), this.transB2));
             const h3_trans = tanhVec(addVec(matVecMul(this.transW3, h2_trans), this.transB3));
-            const predNextState = addVec(matVecMul(this.transW4, h3_trans), this.transB4);
+            const h4_trans = tanhVec(addVec(matVecMul(this.transW4, h3_trans), this.transB4));
+            const predNextState = addVec(matVecMul(this.transW5, h4_trans), this.transB5);
             if (predNextState.some(isNaN)) continue;
 
-            // --- Transition Loss & grads ---
             let errS = sub(tr.nextS, predNextState).map(e => clamp(e, -gradClip, gradClip));
 
-            // --- Reward Network ---
             const nextQ_pred = this.qProj(predNextState);
             const r_h1 = tanhVec(addVec(matVecMul(this.rewardW1, predNextState.concat(nextQ_pred)), this.rewardB1));
             const r_pred = (matVecMul(this.rewardW2, r_h1)[0] + this.rewardB2[0]);
             const errR = clamp(r_pred - tr.r, -gradClip, gradClip);
 
-            // --- Reward grads ---
             const grad_rewardW2 = zeros(1, r_h1.length);
             for (let j = 0; j < r_h1.length; j++) grad_rewardW2[0][j] = errR * r_h1[j];
             const grad_rewardB2 = [errR];
-
             const err_h1 = new Array(r_h1.length);
-            for (let j = 0; j < r_h1.length; j++) {
-                err_h1[j] = errR * this.rewardW2[0][j] * (1 - r_h1[j]*r_h1[j]);
-            }
-
+            for (let j = 0; j < r_h1.length; j++) err_h1[j] = errR * this.rewardW2[0][j] * (1 - r_h1[j]*r_h1[j]);
             const reward_in = predNextState.concat(nextQ_pred);
             const grad_rewardW1 = zeros(r_h1.length, reward_in.length);
-            for (let i = 0; i < r_h1.length; i++) {
-                for (let j = 0; j < reward_in.length; j++) {
-                    grad_rewardW1[i][j] = err_h1[i] * reward_in[j];
-                }
-            }
+            for (let i = 0; i < r_h1.length; i++) for (let j = 0; j < reward_in.length; j++) grad_rewardW1[i][j] = err_h1[i] * reward_in[j];
             const grad_rewardB1 = err_h1.slice();
-
-            const W1T = transpose(this.rewardW1);
-            const dL_din_full = new Array(W1T.length).fill(0);
-            for (let j = 0; j < W1T.length; j++) {
-                let acc = 0;
-                for (let i = 0; i < err_h1.length; i++) acc += W1T[j][i] * err_h1[i];
-                dL_din_full[j] = acc;
-            }
-            const dL_dstate_from_reward = dL_din_full.slice(0, this.stateDim);
+            const dL_dstate_from_reward = matVecMul(transpose(this.rewardW1), err_h1).slice(0, this.stateDim);
             for (let i = 0; i < this.stateDim; i++) errS[i] += lambda_reward_into_state * dL_dstate_from_reward[i];
 
-            // --- Apply transition grads ---
-            const grad_transW4 = zeros(this.stateDim, h3_trans.length);
-            for (let i = 0; i < this.stateDim; i++) {
-                for (let j = 0; j < h3_trans.length; j++) grad_transW4[i][j] = errS[i] * h3_trans[j];
-            }
-            this.adam_transW4.update(this.transW4, grad_transW4);
-            this.adam_transB4.update(this.transB4, errS);
+            // --- COMPLETE BACKPROPAGATION ---
+            // Layer 5
+            const grad_transW5 = zeros(this.stateDim, h4_trans.length);
+            for (let i = 0; i < this.stateDim; i++) for (let j = 0; j < h4_trans.length; j++) grad_transW5[i][j] = errS[i] * h4_trans[j];
+            this.adam_transW5.update(this.transW5, grad_transW5);
+            this.adam_transB5.update(this.transB5, errS);
 
-            const err_h3 = matVecMul(transpose(this.transW4), errS).map((e, i) => e * (1 - h3_trans[i] ** 2));
+            // Layer 4
+            const err_h4 = matVecMul(transpose(this.transW5), errS).map((e, i) => e * (1 - h4_trans[i] ** 2));
+            const grad_transW4 = zeros(h4_trans.length, h3_trans.length);
+            for (let i = 0; i < h4_trans.length; i++) for (let j = 0; j < h3_trans.length; j++) grad_transW4[i][j] = err_h4[i] * h3_trans[j];
+            this.adam_transW4.update(this.transW4, grad_transW4);
+            this.adam_transB4.update(this.transB4, err_h4);
+
+            // Layer 3
+            const err_h3 = matVecMul(transpose(this.transW4), err_h4).map((e, i) => e * (1 - h3_trans[i] ** 2));
             const grad_transW3 = zeros(h3_trans.length, h2_trans.length);
-            for (let i = 0; i < h3_trans.length; i++) {
-                for (let j = 0; j < h2_trans.length; j++) grad_transW3[i][j] = err_h3[i] * h2_trans[j];
-            }
+            for (let i = 0; i < h3_trans.length; i++) for (let j = 0; j < h2_trans.length; j++) grad_transW3[i][j] = err_h3[i] * h2_trans[j];
             this.adam_transW3.update(this.transW3, grad_transW3);
             this.adam_transB3.update(this.transB3, err_h3);
 
-            // --- Apply reward grads ---
+            // Apply reward grads
             this.adam_rewardW2.update(this.rewardW2, grad_rewardW2);
             this.adam_rewardB2.update(this.rewardB2, grad_rewardB2);
             this.adam_rewardW1.update(this.rewardW1, grad_rewardW1);
@@ -1270,6 +1299,7 @@ class WorldModel {
     }
 
     imagine(currentState, Q, depth = 12) {
+        // ... (this method remains the same)
         const paths = [], actions = [[1,0,0], [0,1,0], [0,0,1]];
         for (let ai = 0; ai < actions.length; ai++) {
             let state = currentState.slice(), qual = Q.slice(), total_reward = 0;
@@ -3436,25 +3466,18 @@ getConversationSummary() {
         // Standard Pong AI Algorithm for Challenge Mode
                 // ===== PONG GAME (Rewritten for v4.0 - Simplified and Decoupled from AI Strategy) =====
 // ===== Bare-Bones Neural Network AI for Challenge Mode =====
-// This agent uses the EXACT SAME WorldModel instance as the conscious AI,
-// but without any of the consciousness-related processing.
-
-// REPLACE the entire BareBonesNNAI class with this definitive version.
 
 class BareBonesNNAI {
     constructor(worldModel, gameDimensions) {
-        // Store a reference to the shared WorldModel neural network
+        // Store a reference to its own private, cloned WorldModel
         this.worldModel = worldModel;
         this.gameWidth = gameDimensions.width;
         this.gameHeight = gameDimensions.height;
-        console.log("🤖 Bare-Bones NN AI Initialized with Unified Decision Logic.");
+        this.lastStateVec = null; // For remembering what it did
+        this.lastActionVec = null; // For remembering what it did
+        console.log("🤖 LEARNING Bare-Bones NN AI Initialized (with its own brain).");
     }
 
-    /**
-     * This is the core of the AI. It decides which move to make.
-     * @param {object} gameState - The current state of the game from PongGame.
-     * @returns {{action: string, activations: object}} The chosen action and the neural activations.
-     */
     makeDecision(gameState) {
         const allActions = [
             { name: 'UP', vec: [1, 0, 0] },
@@ -3462,37 +3485,28 @@ class BareBonesNNAI {
             { name: 'IDLE', vec: [0, 0, 1] }
         ];
 
-        // --- THE UNIFIED LOGIC FIX ---
-        // First, determine which actions are physically possible based on current position.
+        let actionsToConsider = allActions;
         const currentPaddleY = gameState.player.y;
         const paddleHeight = gameState.player.height;
         const isAtTop = currentPaddleY <= 1;
         const isAtBottom = currentPaddleY >= this.gameHeight - paddleHeight - 1;
 
-        let actionsToConsider = allActions;
         if (isAtTop) {
-            // If at the top, DO NOT consider moving further up.
             actionsToConsider = allActions.filter(a => a.name !== 'UP');
         } else if (isAtBottom) {
-            // If at the bottom, DO NOT consider moving further down.
             actionsToConsider = allActions.filter(a => a.name !== 'DOWN');
         }
-        // --- END OF UNIFIED LOGIC ---
 
         let bestAction = 'IDLE';
         let bestScore = -Infinity;
         let bestActivations = null; 
         const dummyQualia = vecZeros(this.worldModel.qDim);
 
-        // The AI now makes a decision ONLY from the list of physically possible moves.
         actionsToConsider.forEach(action => {
             const mirroredStateVec = this.createMirroredStateVector(gameState);
             const prediction = this.worldModel.predict(mirroredStateVec, action.vec, dummyQualia);
-            
             const predictedPaddleY = prediction.nextState[4]; 
             const predictedBallY = prediction.nextState[1];
-            
-            // The scoring function is simple and pure.
             let score = -Math.abs(predictedPaddleY - predictedBallY);
 
             if (score > bestScore) {
@@ -3502,15 +3516,41 @@ class BareBonesNNAI {
             }
         });
         
+        // Store the state and chosen action so it can learn from the outcome later.
+        this.lastStateVec = this.createMirroredStateVector(gameState);
+        this.lastActionVec = bestAction === 'UP' ? [1,0,0] : bestAction === 'DOWN' ? [0,1,0] : [0,0,1];
+
         return { action: bestAction, activations: bestActivations };
     }
 
+    // --- NEW METHOD ---
     /**
-     * Creates a state vector from the perspective of the main AI (right paddle)
-     * by horizontally flipping the game world.
-     * @param {object} gameState - The original game state.
-     * @returns {number[]} The formatted state vector.
+     * Allows the opponent AI to learn from the outcome of a point.
+     * @param {number} reward - The reward for the last action (+1 for win, -1 for loss).
+     * @param {object} newGameState - The state of the game after the point was scored.
      */
+    learn(reward, newGameState) {
+        if (!this.lastStateVec || !this.lastActionVec) {
+            return; // Can't learn without a previous state/action
+        }
+
+        const nextStateVec = this.createMirroredStateVector(newGameState);
+        const dummyQualia = vecZeros(this.worldModel.qDim);
+
+        // Store the experience in its own world model's memory
+        this.worldModel.storeTransition(
+            this.lastStateVec,
+            this.lastActionVec,
+            nextStateVec,
+            reward,
+            dummyQualia, // No qualia for the non-conscious AI
+            dummyQualia
+        );
+
+        // Trigger its own world model to train on its memory.
+        this.worldModel.trainFromMemory(16);
+    }
+    
     createMirroredStateVector(gameState) {
         const mirroredBallX = this.gameWidth - gameState.ball.x;
         const mirroredBallVX = -gameState.ball.vx;
@@ -3526,18 +3566,11 @@ class BareBonesNNAI {
         const opponentVY_norm = (gameState.ai.vy || 0) / 10.0;
         const ballToOpponentY_norm = ballY_norm - opponentY_norm;
 
-        return [
-            ballX_norm, ballY_norm, ballVX_norm, ballVY_norm, 
-            aiY_norm, 
-            opponentY_norm, opponentVY_norm, ballToOpponentY_norm
-        ];
+        return [ ballX_norm, ballY_norm, ballVX_norm, ballVY_norm, aiY_norm, opponentY_norm, opponentVY_norm, ballToOpponentY_norm ];
     }
 
     getStats() {
-        return {
-            type: 'Unconscious NN Clone',
-            difficulty: 'Mirrors Conscious AI',
-        };
+        return { type: 'Unconscious NN Clone', difficulty: 'Mirrors Conscious AI' };
     }
 }
 // REPLACE THE StandardPongAI CLASS WITH THIS HARDENED VERSION
@@ -3737,25 +3770,29 @@ class PongGame {
 
         // In the PongGame class...
 
+    // REPLACE the entire 'toggleChallengeMode' method in the 'PongGame' class.
+
     toggleChallengeMode() {
         const wasRunning = this.isRunning;
         this.challengeMode = !this.challengeMode;
         const info = document.getElementById('challenge-info');
         const p_label = document.getElementById('player-label');
         
-        // --- THE DEFINITIVE FIX: TOGGLE PANEL VISIBILITY ---
-        const mainPanel = document.querySelector('.nn-visualizer-panel'); // The first panel
+        const mainPanel = document.querySelector('.nn-visualizer-panel'); 
         const opponentPanel = document.getElementById('nn-visualizer-panel-opponent');
 
         if (this.challengeMode) {
-            this.challengeOpponent = new BareBonesNNAI(this.worldModel, { width: this.width, height: this.height });
-            const stats = this.challengeOpponent.getStats();
+            console.log("🧠 Cloning world model using the dedicated .clone() method...");
+            // Simply call the new .clone() method. It handles all the complex logic internally.
+            const clonedWorldModel = this.worldModel.clone();
             
+            this.challengeOpponent = new BareBonesNNAI(clonedWorldModel, { width: this.width, height: this.height });
+            
+            const stats = this.challengeOpponent.getStats();
             info.innerHTML = `<div style="color: #ff6b6b;">🏆 CHALLENGE MODE</div><div>${stats.type} vs Conscious AI</div>`;
             p_label.textContent = "NN Clone Score:";
             this.challengeStats.totalGames++;
 
-            // Hide the main AI's panel and show the opponent's
             if(mainPanel) mainPanel.style.display = 'none';
             if(opponentPanel) opponentPanel.style.display = 'flex';
 
@@ -3764,7 +3801,6 @@ class PongGame {
             info.innerHTML = `<div style="color: #4CAF50;">🎮 NORMAL MODE</div><div>Human vs Conscious AI</div>`;
             p_label.textContent = "Human Score:";
             
-            // Hide the opponent's panel and show the main AI's
             if(opponentPanel) opponentPanel.style.display = 'none';
             if(mainPanel) mainPanel.style.display = 'flex';
         }
@@ -4409,7 +4445,25 @@ class UltimateConsciousnessSystem {
 
         // 2. UPDATE PHYSICS & GET REWARD / ACTIVATIONS
         const gameUpdateResult = this.pongGame.update();
-        this.lastFrameReward = gameUpdateResult.reward;
+        
+        // --- THE LEARNING FIX ---
+        // Check if a point was just scored
+        if (gameUpdateResult.reward !== 0) {
+            // Store the reward for the conscious AI's next cognitive cycle.
+            this.lastFrameReward = gameUpdateResult.reward;
+
+            // If in challenge mode, tell the opponent to learn from the outcome.
+            // The opponent's reward is the inverse of the conscious AI's reward.
+            if (this.pongGame.challengeMode && this.pongGame.challengeOpponent.learn) {
+                const opponentReward = -gameUpdateResult.reward;
+                const currentGameState = { ball: { ...this.pongGame.ball }, ai: { ...this.pongGame.ai }, player: { ...this.pongGame.player } };
+                this.pongGame.challengeOpponent.learn(opponentReward, currentGameState);
+            }
+        } else {
+             // If no point was scored, there is no reward.
+             this.lastFrameReward = 0;
+        }
+        // --- END OF FIX ---
 
         // 3. RENDER & VISUALIZE
         const consciousnessValue = this.lastResult ? this.lastResult.consciousness : 0.5;
@@ -4426,14 +4480,11 @@ class UltimateConsciousnessSystem {
             this.nnVisualizer.update(this.lastResult.activations);
         }
 
-        // --- THE TIMER FIX ---
-        // This code calculates and displays the elapsed game time.
         const timerEl = document.getElementById('game-length');
         if (timerEl && this.pongGame.isRunning && this.pongGame.gameStartTime > 0) {
             const elapsedSeconds = Math.floor((Date.now() - this.pongGame.gameStartTime) / 1000);
             timerEl.textContent = `${elapsedSeconds}s`;
         }
-        // --- END OF FIX ---
 
         requestAnimationFrame(() => this.gameLoop());
     }
